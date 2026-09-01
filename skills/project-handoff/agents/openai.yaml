@@ -1,0 +1,6 @@
+interface:
+  display_name: "Project Handoff"
+  short_description: "精炼当前会话并维护工作目录中的项目开发交接文档，供新会话继续开发使用"
+  default_prompt: "Use $project-handoff to verify the active project facts and create, preview, or update 项目开发交接.md in the current project directory."
+policy:
+  allow_implicit_invocation: false
