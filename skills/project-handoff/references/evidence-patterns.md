@@ -18,7 +18,7 @@ Treat permissions, tenant IDs, external record IDs, prices, versions, deployment
 ## Evidence wording
 
 - Use `[已实现][未验证]` when an artifact exists but behavior has not been checked.
-- Use `[已验证]` only with the check, result, verification time or current-session evidence, and the scope actually covered.
+- Use `[已验证]` only with the check, result, an explicit `YYYY-MM-DD` verification date, a concrete code-span or linked evidence reference, and the scope actually covered. This applies to strong claims in every section. Preserve old evidence dates across handoff updates; replace unknown session-relative dates with `[待确认]`, not today's date.
 - Use `[用户验收]` only after explicit user acceptance.
 - Use `[已部署-已回读]` only after checking the live target; deployment is independent of user acceptance.
 - Use `[受阻]` with the blocking condition and the next action or event that can clear it.
@@ -32,3 +32,5 @@ Add one when evidence is tied to mutable state. Typical invalidators are a new s
 For a non-Git project, fingerprint only files whose content can change the continuation decision, acceptance, or material risk. Prefer the authoritative requirement, active workbook, RPA package, source deck, or accepted deliverable. Exclude temporary exports, logs, caches, duplicate copies, credentials, and large folders.
 
 For each selected path, state in the handoff what conclusion it supports and what must be revalidated when the fingerprint changes. A matching fingerprint proves only that the selected bytes are unchanged; it does not prove that the business fact remains true or that untracked external state is current.
+
+Git snapshots include staged object IDs and changed/untracked file contents. Ignored artifacts still need explicit critical-file selection. A missing Git executable uses the non-Git baseline; a Git access error stops the check. An empty non-Git baseline returns `LIMITED` (exit 3); `--allow-limited` accepts the document while preserving the `VALID-LIMITED` distinction. A stale snapshot is exit 2 even without `--strict`.

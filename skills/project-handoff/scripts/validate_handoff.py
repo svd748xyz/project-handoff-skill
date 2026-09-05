@@ -88,18 +88,13 @@ NO_GIT_VALUE = "not-a-git-repository"
 CRITICAL_FILES_KEY = "critical-files"
 CRITICAL_FINGERPRINT_KEY = "critical-files-fingerprint"
 NO_CRITICAL_FILES_VALUE = "none"
-HANDOFF_FILENAMES = {"项目开发交接.md", "项目开发交接.md.candidate"}
+HANDOFF_FILENAMES = {"项目开发交接.md", "项目开发交接.md.candidate", "项目开发交接.md.lock"}
 ANY_STATUS_RE = re.compile(
     r"\[(?:拟定|进行中|已实现\]\[未验证|已验证|用户验收|已部署-已回读|受阻|待确认)\]"
 )
 STRONG_STATUS_RE = re.compile(r"\[(?:已验证|用户验收|已部署-已回读)\]")
-EVIDENCE_HINT_RE = re.compile(
-    r"(?:证据|测试|回读|日志|报告|构建|命令|结果|路径|evidence|test|verified|commit|diff|"
-    r"issue|pull request|\bpr\b|https?://|`[^`]+`)",
-    re.IGNORECASE,
-)
 TIME_HINT_RE = re.compile(
-    r"(?:20\d{2}-\d{2}-\d{2}|当前会话|本次核验|本轮核验|current session|this session|verified on)",
+    r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)",
     re.IGNORECASE,
 )
 ACCEPTANCE_HINT_RE = re.compile(
@@ -125,10 +120,23 @@ RAW_CONTEXT_RE = re.compile(
 class Report:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    stale: list[str] = field(default_factory=list)
+    limited: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not self.errors
+
+    def exit_code(self, *, strict: bool = False, allow_limited: bool = False) -> int:
+        if self.errors:
+            return 1
+        if self.stale:
+            return 2
+        if strict and self.warnings:
+            return 1
+        if self.limited and not allow_limited:
+            return 3
+        return 0
 
 
 @dataclass(frozen=True)
@@ -266,7 +274,8 @@ def _clean_value(value: str) -> str:
 
 
 def _normalise_path(value: str) -> str:
-    return os.path.normcase(os.path.abspath(os.path.expandvars(_clean_value(value))))
+    # Resolve symlinks and Windows 8.3 aliases before comparing locations.
+    return os.path.normcase(str(Path(os.path.expandvars(_clean_value(value))).expanduser().resolve()))
 
 
 def _run_git(root: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
@@ -277,19 +286,34 @@ def _run_git(root: Path, *args: str, text: bool = True) -> subprocess.CompletedP
         text=text,
         encoding="utf-8" if text else None,
         errors="replace" if text else None,
+        env={**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_OPTIONAL_LOCKS": "0"},
+        timeout=30,
     )
 
 
 def _git_snapshot(root: Path) -> GitSnapshot:
     root = root.resolve()
-    probe = _run_git(root, "rev-parse", "--is-inside-work-tree")
-    if probe.returncode != 0 or probe.stdout.strip() != "true":
+    if not root.is_dir():
+        raise ValueError(f"project root is not an existing directory: {root}")
+    try:
+        probe = _run_git(root, "rev-parse", "--is-inside-work-tree")
+    except FileNotFoundError:
         return GitSnapshot(NO_GIT_VALUE, NO_GIT_VALUE, NO_GIT_VALUE, NO_GIT_VALUE)
+    if probe.returncode != 0:
+        if "not a git repository" in probe.stderr.lower():
+            return GitSnapshot(NO_GIT_VALUE, NO_GIT_VALUE, NO_GIT_VALUE, NO_GIT_VALUE)
+        raise RuntimeError("git repository probe failed: " + probe.stderr.strip())
+    if probe.stdout.strip() != "true":
+        raise RuntimeError("project root is not a Git working tree")
 
-    revision_result = _run_git(root, "rev-parse", "HEAD")
+    revision_result = _run_git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+    if revision_result.returncode not in (0, 1):
+        raise RuntimeError("git HEAD lookup failed: " + revision_result.stderr.strip())
     revision = revision_result.stdout.strip() if revision_result.returncode == 0 else "unborn"
 
     branch_result = _run_git(root, "branch", "--show-current")
+    if branch_result.returncode != 0:
+        raise RuntimeError("git branch lookup failed: " + branch_result.stderr.strip())
     branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
     if not branch:
         branch = "detached" if revision != "unborn" else "unborn"
@@ -299,11 +323,13 @@ def _git_snapshot(root: Path) -> GitSnapshot:
         "status",
         "--porcelain=v1",
         "-z",
-        "--untracked-files=normal",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
         "--",
         ".",
-        ":(exclude)项目开发交接.md",
-        ":(exclude)项目开发交接.md.candidate",
+        ":(exclude,literal)项目开发交接.md",
+        ":(exclude,literal)项目开发交接.md.candidate",
+        ":(exclude,literal)项目开发交接.md.lock",
         text=False,
     )
     if status_result.returncode != 0:
@@ -314,7 +340,44 @@ def _git_snapshot(root: Path) -> GitSnapshot:
     status_bytes = status_result.stdout
     if not status_bytes:
         return GitSnapshot(revision, branch, "clean", "clean")
-    fingerprint = "sha256:" + hashlib.sha256(status_bytes).hexdigest()
+    # Status alone is unchanged when an already-dirty file is edited again.
+    # Index object IDs cover staged content; hash actual bytes of dirty/untracked
+    # working files separately, including changes within dirty submodules.
+    digest = hashlib.sha256(b"project-handoff-content-v2\0" + status_bytes)
+    index = _run_git(root, "ls-files", "--stage", "-z", "--", ".",
+                     ":(exclude,literal)项目开发交接.md",
+                     ":(exclude,literal)项目开发交接.md.candidate",
+                     ":(exclude,literal)项目开发交接.md.lock", text=False)
+    top = _run_git(root, "rev-parse", "--show-toplevel")
+    if index.returncode or top.returncode:
+        raise RuntimeError("could not read Git index or repository root")
+    digest.update(index.stdout)
+    repository_root = Path(top.stdout.strip()).resolve()
+    entries = iter(status_bytes.split(b"\0"))
+    for entry in entries:
+        if not entry:
+            continue
+        state, raw_path = entry[:2], entry[3:]
+        if b"R" in state or b"C" in state:
+            next(entries, None)  # porcelain -z has a second, original path
+        candidate = repository_root / os.fsdecode(raw_path)
+        digest.update(b"\0" + raw_path + b"\0")
+        if candidate.is_symlink():
+            digest.update(b"symlink\0" + os.fsencode(os.readlink(candidate)))
+        elif not candidate.exists():
+            digest.update(b"missing")
+        else:
+            candidate.resolve().relative_to(root)
+            if candidate.is_file():
+                digest.update(_file_sha256(candidate).encode("ascii"))
+            elif candidate.is_dir():
+                nested = _git_snapshot(candidate)
+                if nested.tree_state == NO_GIT_VALUE:
+                    raise RuntimeError(f"cannot fingerprint directory: {raw_path!r}")
+                digest.update(json.dumps(nested.as_metadata(), sort_keys=True).encode("utf-8"))
+            else:
+                raise RuntimeError(f"unsupported working-tree file: {raw_path!r}")
+    fingerprint = "sha256:" + digest.hexdigest()
     return GitSnapshot(revision, branch, "dirty", fingerprint)
 
 
@@ -513,11 +576,39 @@ def _list_items(body: str) -> list[str]:
             if current:
                 items.append(" ".join(current))
             current = [line]
-        elif current and line and not line.startswith("#") and not line.startswith("<!--"):
+        elif line and not line.startswith("#") and not line.startswith("<!--"):
             current.append(line)
+        elif not line and current:
+            items.append(" ".join(current))
+            current = []
     if current:
         items.append(" ".join(current))
     return items
+
+
+def _checked_items(body: str, section: str, report: Report) -> list[str]:
+    """Require flat lists in mechanically checked sections; never skip prose."""
+    active = False
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            active = False
+            continue
+        if re.match(r"^(?:[-*+]|\d+[.)])\s+", line) and not raw[:1].isspace():
+            active = True
+        elif active and raw[:1].isspace() and not re.match(r"^(?:[-*+]|\d+[.)])\s+", line):
+            continue
+        else:
+            report.errors.append(f"{section} must use flat list items with indented continuations; unsupported line: {line[:60]}")
+    return _list_items(body)
+
+
+def _has_value(pattern: re.Pattern, text: str) -> bool:
+    match = pattern.search(text)
+    if not match:
+        return False
+    value = text[match.end():].strip(" :：;；.。-`")
+    return bool(value) and value.casefold() not in {"todo", "tbd", "待填写", "待补充"}
 
 
 def _validate_semantics(
@@ -525,43 +616,64 @@ def _validate_semantics(
     metadata: dict[str, str],
     report: Report,
 ) -> None:
-    bodies = _section_bodies(text)
+    bodies = {key: HTML_COMMENT_RE.sub("", value) for key, value in _section_bodies(text).items()}
+    checked = {
+        section: _checked_items(bodies.get(section, ""), section, report)
+        for section in ("sources", "current-status", "verified-progress", "blockers", "next-steps")
+    }
+    for line in HTML_COMMENT_RE.sub("", text).splitlines():
+        if line.lstrip().startswith("#") and STRONG_STATUS_RE.search(line):
+            report.errors.append("put strong verification claims in the body, not a heading")
+
+    # Strong assertions have the same requirements wherever they occur.
+    for body in bodies.values():
+        for item in _list_items(body):
+            if SESSION_INFERENCE_RE.search(item) and "[待确认]" not in item:
+                report.errors.append("session inference must be marked [待确认]")
+            if not STRONG_STATUS_RE.search(item):
+                continue
+            for claim in re.split(r"(?=\[(?:已验证|用户验收|已部署-已回读)\])", item)[1:]:
+                claim = STRONG_STATUS_RE.sub("", claim)
+                if not re.search(r"`[^`]+`|https?://\S+|\[[^\]]+\]\([^)]+\)", claim):
+                    report.errors.append("strong verification claim is missing a concrete evidence reference (code span or link)")
+                dates = TIME_HINT_RE.findall(claim)
+                if not dates:
+                    report.errors.append("strong verification claim needs an explicit verification date (YYYY-MM-DD)")
+                for value in dates:
+                    try:
+                        datetime.strptime(value, "%Y-%m-%d")
+                    except ValueError:
+                        report.errors.append(f"invalid verification date: {value}")
+                if not re.search(r"范围|scope", claim, re.IGNORECASE):
+                    report.errors.append("strong verification claim is missing its evidence scope")
 
     sources = HTML_COMMENT_RE.sub("", bodies.get("sources", ""))
     if not re.search(r"(?:冲突|优先级|precedence|conflict)", sources, re.IGNORECASE):
         report.errors.append("sources section must state a conflict or precedence rule")
-    if not _list_items(sources):
+    if not checked["sources"]:
         report.errors.append("sources section must contain at least one source mapping item")
 
-    verified_items = _list_items(HTML_COMMENT_RE.sub("", bodies.get("verified-progress", "")))
+    verified_items = checked["verified-progress"]
     for item in verified_items:
         if not ANY_STATUS_RE.search(item):
             report.errors.append("verified-progress item is missing a recognized state label")
-        if not STRONG_STATUS_RE.search(item):
-            continue
-        if not EVIDENCE_HINT_RE.search(item):
-            report.errors.append("strong verification claim is missing an evidence reference")
-        if not TIME_HINT_RE.search(item):
-            report.errors.append("strong verification claim is missing a verification date or current-session marker")
 
-    current_items = _list_items(HTML_COMMENT_RE.sub("", bodies.get("current-status", "")))
+    current_items = checked["current-status"]
     for item in current_items:
         if not ANY_STATUS_RE.search(item):
             report.errors.append("current-status item is missing a recognized state label")
-        if SESSION_INFERENCE_RE.search(item) and "[待确认]" not in item:
-            report.errors.append("session inference must be marked [待确认]")
 
-    next_items = _list_items(HTML_COMMENT_RE.sub("", bodies.get("next-steps", "")))
+    next_items = checked["next-steps"]
     for item in next_items:
-        if not ACCEPTANCE_HINT_RE.search(item):
+        if not _has_value(ACCEPTANCE_HINT_RE, item):
             report.errors.append("next-step item is missing an observable acceptance condition")
 
-    blocker_items = _list_items(HTML_COMMENT_RE.sub("", bodies.get("blockers", "")))
+    blocker_items = checked["blockers"]
     for item in blocker_items:
         if "[受阻]" not in item and "[待确认]" not in item:
             report.errors.append("blocker item must be marked [受阻] or [待确认]")
-        if "[受阻]" in item and not CLEARING_HINT_RE.search(item):
-            report.warnings.append("blocked item is missing a clearing condition or next action")
+        if "[受阻]" in item and not _has_value(CLEARING_HINT_RE, item):
+            report.errors.append("blocked item is missing a clearing condition or next action")
 
     scratch = Report()
     critical_files = _parse_critical_files(metadata, scratch)
@@ -600,18 +712,18 @@ def _validate_current_snapshot(
         return
     try:
         current = _git_snapshot(current_root)
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
         report.errors.append(f"could not capture current project snapshot: {exc}")
         return
 
     recorded_root = metadata.get("project-root")
     if recorded_root and _normalise_path(recorded_root) != _normalise_path(str(current_root)):
-        report.warnings.append("handoff project-root differs from current root; refresh location metadata")
+        report.stale.append("handoff project-root differs from current root; refresh location metadata")
 
     for key, current_value in current.as_metadata().items():
         recorded = metadata.get(key)
         if recorded != current_value:
-            report.warnings.append(
+            report.stale.append(
                 f"handoff is stale: {key} changed from {recorded!r} to {current_value!r}"
             )
 
@@ -621,24 +733,24 @@ def _validate_current_snapshot(
         return
     if critical_files is None:
         if current.tree_state == NO_GIT_VALUE:
-            report.warnings.append(
+            report.limited.append(
                 "non-git handoff has no critical-files baseline; freshness is limited"
             )
         return
     if not critical_files:
         if current.tree_state == NO_GIT_VALUE:
-            report.warnings.append(
+            report.limited.append(
                 "non-git handoff tracks no critical files; freshness is limited"
             )
         return
     try:
         current_fingerprint = _critical_files_fingerprint(current_root, critical_files)
     except (OSError, ValueError) as exc:
-        report.warnings.append(f"handoff is stale: {exc}")
+        report.stale.append(f"handoff is stale: {exc}")
         return
     recorded_fingerprint = metadata.get(CRITICAL_FINGERPRINT_KEY)
     if recorded_fingerprint != current_fingerprint:
-        report.warnings.append(
+        report.stale.append(
             "handoff is stale: critical-files-fingerprint changed from "
             f"{recorded_fingerprint!r} to {current_fingerprint!r}"
         )
@@ -878,7 +990,7 @@ def run_self_test() -> int:
             "non-git critical change marks handoff stale",
             non_git_stale.ok and any(
                 "critical-files-fingerprint changed" in item
-                for item in non_git_stale.warnings
+                for item in non_git_stale.stale
             ),
         ))
         requirements.write_text("local parser requirements\n", encoding="utf-8")
@@ -893,7 +1005,7 @@ def run_self_test() -> int:
         legacy_report = validate_text(legacy_non_git, current_root=workspace)
         scenarios.append((
             "legacy non-git handoff warns about limited freshness",
-            legacy_report.ok and any("freshness is limited" in item for item in legacy_report.warnings),
+            legacy_report.ok and any("freshness is limited" in item for item in legacy_report.limited),
         ))
         scenarios.append(("absolute critical path rejected", not validate_text(
             valid.replace('critical-files: ["requirements.md"]', 'critical-files: ["C:/outside.txt"]')
@@ -946,7 +1058,7 @@ def run_self_test() -> int:
             stale_report = validate_file(git_path, current_root=repo)
             scenarios.append((
                 "git change marks handoff stale",
-                stale_report.ok and any("handoff is stale" in item for item in stale_report.warnings),
+                stale_report.ok and any("handoff is stale" in item for item in stale_report.stale),
             ))
         pii_report = validate_text(valid + "\n联系人：person@example.com\n")
         scenarios.append((
@@ -959,13 +1071,25 @@ def run_self_test() -> int:
     return 0 if all(passed for _, passed in scenarios) else 1
 
 
-def _print_report(path: Path, report: Report) -> None:
+def _print_report(path: Path, report: Report, *, strict: bool = False, allow_limited: bool = False) -> None:
     for error in report.errors:
         print(f"ERROR: {error}")
     for warning in report.warnings:
         print(f"WARNING: {warning}")
-    if report.ok:
-        print(f"PASS: {path}")
+    for reason in report.stale:
+        print(f"STALE: {reason}")
+    for reason in report.limited:
+        print(f"LIMITED: {reason}")
+    code = report.exit_code(strict=strict, allow_limited=allow_limited)
+    if code == 1:
+        label = "FAIL"
+    elif code == 2:
+        label = "STALE"
+    elif report.limited:
+        label = "VALID-LIMITED" if code == 0 else "LIMITED"
+    else:
+        label = "PASS"
+    print(f"{label}: {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1004,6 +1128,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Return failure when warnings are present.",
     )
     parser.add_argument(
+        "--allow-limited",
+        action="store_true",
+        help="Accept limited snapshot coverage; does not waive errors, stale state, or strict warnings.",
+    )
+    parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run isolated built-in validation scenarios.",
@@ -1019,7 +1148,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshot_metadata.update(
                 _critical_files_metadata(args.snapshot_root, args.critical_file)
             )
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
             print(f"ERROR: could not capture project snapshot: {exc}")
             return 1
         for key, value in snapshot_metadata.items():
@@ -1040,10 +1169,8 @@ def main(argv: list[str] | None = None) -> int:
         expected_project_root=args.expected_project_root,
         current_root=args.current_root if args.check_current else None,
     )
-    _print_report(args.path, report)
-    if not report.ok or (args.strict and report.warnings):
-        return 1
-    return 0
+    _print_report(args.path, report, strict=args.strict, allow_limited=args.allow_limited)
+    return report.exit_code(strict=args.strict, allow_limited=args.allow_limited)
 
 
 if __name__ == "__main__":

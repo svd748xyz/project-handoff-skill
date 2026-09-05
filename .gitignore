@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.candidate
+.DS_Store
+Thumbs.db
+.venv/
+/项目开发交接.md
+/项目开发交接.md.candidate

@@ -37,7 +37,7 @@ def main() -> int:
 
         validator = installed / "scripts" / "validate_handoff.py"
         result = subprocess.run(
-            [sys.executable, str(validator), "--self-test"],
+            [sys.executable, "-B", str(validator), "--self-test"],
             cwd=temporary,
             text=True,
             encoding="utf-8",
@@ -47,6 +47,15 @@ def main() -> int:
         )
         if result.returncode != 0:
             print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            return result.returncode
+
+        helper = installed / "scripts" / "manage_handoff.py"
+        result = subprocess.run(
+            [sys.executable, "-B", str(helper), "--help"], cwd=temporary,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+        if result.returncode != 0:
             print(result.stderr, end="", file=sys.stderr)
             return result.returncode
 

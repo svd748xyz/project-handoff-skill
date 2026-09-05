@@ -20,12 +20,15 @@ project-handoff-skill/
 ├── tools/
 │   ├── install.py
 │   ├── test_installer.py
+│   ├── test_regressions.py
 │   ├── smoke_install.py
 │   └── check_release.py
 └── skills/project-handoff/
     ├── SKILL.md
     ├── agents/openai.yaml
-    ├── scripts/validate_handoff.py
+    ├── scripts/
+    │   ├── validate_handoff.py
+    │   └── manage_handoff.py
     └── references/
         ├── consumer-contract.md
         └── evidence-patterns.md
@@ -38,6 +41,8 @@ project-handoff-skill/
 - A coding agent that supports Agent Skills-style `SKILL.md` packages, or can follow the instructions manually
 
 The validator uses only the Python standard library and performs no network requests.
+
+If Git is not installed, selected critical-file fingerprints remain available. Git repository access failures are reported instead of being mistaken for non-Git projects.
 
 ## Safe multi-agent installer
 
@@ -167,6 +172,12 @@ Run the built-in test suite:
 python skills/project-handoff/scripts/validate_handoff.py --self-test
 ```
 
+Run the snapshot and safe-save regression suite:
+
+```bash
+python -B tools/test_regressions.py
+```
+
 Capture a read-only project snapshot:
 
 ```bash
@@ -187,9 +198,34 @@ python skills/project-handoff/scripts/validate_handoff.py \
 
 Windows PowerShell users can place the same arguments on one line.
 
+Result codes: `0` accepted, `1` invalid/check failed, `2` stale snapshot, `3` limited coverage. `--strict` additionally rejects review warnings. For an understood empty non-Git baseline, `--allow-limited` returns success with `VALID-LIMITED`; it never suppresses errors or stale state.
+
+Dirty Git fingerprints now include staged object IDs and changed/untracked file contents, so repeated edits to the same dirty file are detected. Existing handoffs with the earlier status-only dirty fingerprint need evidence review and regeneration. Ignored deliverables still require explicit `--critical-file` selection.
+
+## Generate metadata and save safely
+
+After inspecting project identity and evidence, print the candidate metadata without writing project files:
+
+```bash
+python -B skills/project-handoff/scripts/manage_handoff.py prepare --root /path/to/project --workspace /path/to/project --project-key my-project --evidence-scope "requirements and targeted test results" --critical-file requirements.md
+```
+
+Use the entire returned metadata block when composing the adjacent `项目开发交接.md.candidate`. The helper preserves an existing project ID and records the previous handoff's hash. It defaults history coverage to `visible-only`; higher coverage must be supported by the actual session evidence. It does not refresh the dates of old verification claims.
+
+Preview or save the reviewed candidate:
+
+```bash
+python -B skills/project-handoff/scripts/manage_handoff.py save --root /path/to/project --workspace /path/to/project --preview
+python -B skills/project-handoff/scripts/manage_handoff.py save --root /path/to/project --workspace /path/to/project
+```
+
+Preview writes nothing. Saving validates the candidate, checks current source state and previous target hash, acquires an exclusive cooperative lock, replaces the target atomically, then reads back and revalidates it. It consumes the candidate on success and retains it on pre-save failure. Inspect an existing candidate or lock before starting; do not overwrite another writer's work. The checks are optimistic: unrelated editors can still race, and a post-save revalidation failure must be inspected rather than reported as completed.
+
+Evidence statements in every section require an explicit verification date, a concrete evidence reference (code span or link), and scope. Mechanically checked sections use flat lists with indented continuation lines; unsupported prose, tables, and nested lists fail explicitly.
+
 ## Verification boundary
 
-Static validation proves structure, evidence labels, identity consistency, and snapshot freshness. It does not prove business truth or successful continuation by a new agent. For behavioral acceptance, follow `references/consumer-contract.md` in an isolated fresh session.
+Static validation checks structure, evidence formatting, identity consistency, and the selected snapshot coverage. It does not prove the truth of cited evidence or successful continuation by a new agent. For behavioral acceptance, follow `references/consumer-contract.md` in an isolated fresh session.
 
 ## Security and privacy
 

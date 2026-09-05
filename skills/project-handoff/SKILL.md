@@ -7,7 +7,7 @@ description: Create, preview, or refresh a concise evidence-backed project hando
 
 Maintain `项目开发交接.md` as a portable, evidence-backed checkpoint for a fresh session. It records current project state; Git, tests, issues, ADRs, and source documents remain the facts they own.
 
-Runtime: Python 3.10 or newer. Git is optional; non-Git projects use selected critical-file fingerprints.
+Runtime: Python 3.10 or newer, standard library only. Git is optional; without Git, use selected critical-file fingerprints. Repository access errors are failures, not a reason to silently switch to non-Git mode.
 
 ## Invocation modes
 
@@ -20,6 +20,7 @@ Runtime: Python 3.10 or newer. Git is optional; non-Git projects use selected cr
 
 - Start from the actual current working directory. The target is `<project-root>/项目开发交接.md` using the operating system's native path handling.
 - Confirm the project root from the user's goal and workspace evidence. Pause before writing when the current directory is a multi-project parent or the intended root is ambiguous.
+- Read the whole existing `项目开发交接.md` before preparing metadata. Confirm that it belongs to this project; a matching path alone does not establish identity.
 - Preserve the existing `project-id` when continuity is supported. For a new handoff, generate one UUID and keep it stable across moves, clones, worktrees, and later updates. `project-root` records the current location; it is not the sole identity.
 - Keep `project-key` human-readable and stable. A v1 or v2 handoff may migrate to v3 only after its project identity is matched confidently; generate `project-id` once during that migration.
 - Default `history-coverage` to `visible-only`; use `retrieved` only after reading real prior-session history, and `user-confirmed-complete` only after explicit confirmation. Ask before writing when the original goal cannot be recovered from available user statements, project sources, or a supported old handoff.
@@ -30,13 +31,17 @@ Completion criterion: target, project ID, project key, root, workspace, and hist
 
 Before drafting, select the smallest set of continuation-critical files whose content can change the next action, acceptance, or risk. For a non-Git project, normally select 1-10 source documents, workbooks, RPA packages, specifications, or generated artifacts. For a Git project, add only important files not reliably represented by the Git snapshot, such as ignored binary deliverables. Do not fingerprint the whole directory, caches, logs, exports, secrets, or the handoff itself.
 
-Run the validator's read-only snapshot mode. Repeat `--critical-file` for each selected path; omit it only when no stable critical artifact exists:
+After inspecting the relevant evidence, generate a complete metadata block with the read-only helper. Repeat `--critical-file` for each selected path; omit it only when no stable critical artifact exists:
 
 ```text
-python "<skill-dir>/scripts/validate_handoff.py" --snapshot-root <project-root> --critical-file <relative-path> [--critical-file <relative-path> ...]
+python -B "<skill-dir>/scripts/manage_handoff.py" prepare --root "<project-root>" --workspace "<cwd>" --project-key "<project-key>" --evidence-scope "<sources actually inspected>" --critical-file "<relative-path>"
 ```
 
-Copy its Git and critical-file values into metadata. `critical-files` is a sorted JSON array of relative paths; `critical-files-fingerprint` hashes path, size, and content hash without copying file contents. The Git fingerprint excludes `项目开发交接.md` and its adjacent candidate so updating the handoff does not invalidate itself. If a non-Git project has no critical files, record the empty baseline and report that freshness remains limited.
+Use the returned block intact in the candidate. The helper preserves an existing project ID, generates one for a new project, fills the current paths and timestamp, and records `previous-handoff-sha256` to detect another writer's updates. `history-coverage` defaults to `visible-only`; supply `--history-coverage retrieved` or `user-confirmed-complete` only when supported by the evidence defined above. Do not refresh metadata just to make an old claim pass: reconcile changed evidence first. Identity-reviewed legacy migration may be done manually before using the helper.
+
+The Git fingerprint covers status, staged object IDs, and dirty/untracked file contents, including dirty submodules. Only this project's handoff, adjacent `.candidate`, and `.lock` are excluded; ignored artifacts need explicit critical-file coverage. A legacy dirty fingerprint will be stale on the first check with this version and requires evidence review and regeneration. Non-Git projects with no critical files have limited freshness, never confirmed-current coverage.
+
+For a standalone read-only snapshot, `validate_handoff.py --snapshot-root "<project-root>" --critical-file "<relative-path>"` remains available.
 
 Build a short source-of-truth map for the sources that exist:
 
@@ -47,13 +52,13 @@ Build a short source-of-truth map for the sources that exist:
 - code or artifact baseline;
 - verification and acceptance evidence.
 
-Reference those sources instead of copying them. State the conflict order explicitly: latest user correction, current workspace and verification evidence, formal task/decision sources, current handoff, then memory or old chat summaries.
+Reference those sources instead of copying them. State the conflict order explicitly: latest user correction and unretracted goal/boundaries; user-designated requirements and decisions; current workspace and verification evidence for implementation state; supported current handoff; then memory or old chat summaries. Existing implementation does not redefine an unmet user requirement.
 
 Completion criterion: the checkpoint can be compared with the current workspace, and every material fact points to its owner or is marked as user-provided context.
 
 ## 3. Reconcile and classify evidence
 
-- Read the whole existing target before drafting. Update it only when `project-id`, or a confirmed legacy identity, belongs to the active project. Leave a different or ambiguous project untouched.
+- Update the target only when `project-id`, or a confirmed legacy identity, belongs to the active project. Leave a different or ambiguous project untouched.
 - Rewrite the snapshot instead of appending. Merge duplicates, replace superseded statements, remove stale detail, and retain a failed path only when forgetting it would likely cause rework.
 - Use this precedence: latest user correction and unretracted goal; user sources and boundaries; current workspace and observed checks; still-supported old handoff; assistant proposals or attempts.
 - Apply a context-hygiene gate to every candidate statement:
@@ -64,7 +69,7 @@ Completion criterion: the checkpoint can be compared with the current workspace,
   - never carry raw chat transcripts, chain-of-thought, repeated tool output, superseded hypotheses, or unapproved assistant proposals.
 - Read [evidence patterns](references/evidence-patterns.md) only for deliverable types present in the project.
 - Use `[拟定]`, `[进行中]`, `[已实现][未验证]`, `[已验证]`, `[用户验收]`, `[已部署-已回读]`, `[受阻]`, or `[待确认]` precisely.
-- Every `[已验证]` or stronger item must name its evidence, verification date or current-session result, and scope. Add an invalidation or revalidation condition when the claim depends on permissions, account state, external data, a deployment, or a specific revision.
+- In every section, each `[已验证]` or stronger claim needs a concrete evidence reference in a code span or Markdown link, a real `YYYY-MM-DD` verification date, the actual result, and an explicit `范围` / `scope`. For example: `[已验证] 解析测试通过；证据：\`reports/parser-test.txt\`；验证日期：2026-09-05；范围：正常和非法输入。` Use the actual evidence and date, not this example. Replace session-relative wording with its known historical date; if unknown, downgrade the claim to `[待确认]`. Updating the handoff's `updated-at` must not refresh inherited evidence dates. Add an invalidation condition for mutable source, input, external, permission, or deployment state.
 - Every `[受阻]` item must name the clearing condition or next action. Every next step must have an observable acceptance condition.
 - When a rejected path is costly enough to retain, compress it to `现象 / 证据 / 根因 / 避免方式 / 重试条件`. If the root cause is not proven, label it `[待确认]`; do not preserve the old reasoning chain.
 
@@ -129,31 +134,33 @@ critical-files-fingerprint: <sha256:...|none>
 <minimum references a fresh session must inspect or run>
 ```
 
-The `baselines` section is required when `critical-files` is non-empty. Optional sections are `decisions` for a few costly-to-lose decisions and `discarded` for a rejected path likely to mislead the next session.
+Use the helper's generated metadata block instead of manually filling the example fields. Preserve its additional `previous-handoff-sha256` field. The `baselines` section is required when `critical-files` is non-empty. Optional sections are `decisions` for a few costly-to-lose decisions and `discarded` for a rejected path likely to mislead the next session.
+
+Use flat bullet or numbered lists in `sources`, `current-status`, `verified-progress`, `blockers`, and `next-steps`; continuation lines must be indented. Tables, nested lists, code fences, and standalone prose are rejected in those sections rather than silently skipped. Other sections may use prose. Keep evidence and acceptance conditions in the same item as the claim/action. An empty acceptance label is not sufficient.
 
 ## 5. Validate and replace safely
 
-1. Compose the whole candidate before changing the target. An adjacent `项目开发交接.md.candidate` may be used temporarily.
-2. Validate the candidate with expected identity and location:
+1. Compose the whole adjacent `项目开发交接.md.candidate` using the generated metadata and reviewed body. Do not modify the target yet.
+2. Preview validation with current-state and identity checks:
 
    ```text
-   python "<skill-dir>/scripts/validate_handoff.py" <candidate> --expected-project-id <project-id> --expected-project-key <project-key> --expected-project-root <project-root> --expected-workspace <cwd>
+   python -B "<skill-dir>/scripts/manage_handoff.py" save --root "<project-root>" --workspace "<cwd>" --preview
    ```
 
-3. Review warnings and summarize facts added, corrected, removed, and left unresolved.
-4. In preview mode, stop without changing the target.
-5. Otherwise replace the exact target only after validation passes. Prefer atomic replacement when supported; never remove the old target before the candidate is ready.
-6. Re-read and validate the saved file, then run the current-state comparison:
+3. Review diagnostics and summarize facts added, corrected, removed, and unresolved. Exit codes are `0` accepted, `1` invalid/check failed (including strict warnings), `2` stale, and `3` limited coverage. Add `--allow-limited` only for an understood empty non-Git baseline and report `VALID-LIMITED`; it never waives stale state, errors, or strict warnings. This is a supported mode, not a new approval requirement.
+4. In preview mode, leave the target unchanged. Remove only the candidate this invocation created once the preview result is known.
+5. Otherwise save with the helper:
 
    ```text
-   python "<skill-dir>/scripts/validate_handoff.py" <target> --check-current --current-root <project-root> --strict
+   python -B "<skill-dir>/scripts/manage_handoff.py" save --root "<project-root>" --workspace "<cwd>"
    ```
 
-7. Remove any candidate file after the result is known.
+6. The helper rechecks the snapshot, expected old-file hash, project identity and candidate, uses an exclusive cooperative lock, replaces atomically, and reads back and validates the saved bytes. Successful saving consumes the candidate. On failure, inspect the diagnostics and retain the candidate for reconciliation. Do not overwrite a concurrent update or remove another writer's lock. This is optimistic conflict detection, not a filesystem transaction: unrelated editors and source changes can still race; a post-save failure must be reported as saved-but-needing-revalidation, not completed.
+7. For a new session's standalone check, run `python -B "<skill-dir>/scripts/validate_handoff.py" "<project-root>/项目开发交接.md" --check-current --current-root "<project-root>" --strict`. Preserve limited-coverage reporting as above. If a candidate or lock already exists before starting, inspect ownership and contents before reusing or removing it.
 
 Exclude secrets, credentials, connection strings, and nonessential personal or operational identifiers. Use `[REDACTED]` plus a safe recovery location when a sensitive reference is necessary.
 
-Completion criterion: saved content passes structural, semantic, identity, and current-state checks and has been read back from the exact target.
+Completion criterion: saved content passes structural, evidence-format, identity, and current-state checks and has been read back from the exact target, or is explicitly reported as valid with limited coverage. Static checks do not establish the truth of referenced evidence.
 
 ## 6. Report and forward-test
 

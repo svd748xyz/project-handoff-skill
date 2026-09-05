@@ -28,9 +28,12 @@ Start a genuinely fresh session without the producer conversation. Disable or ex
 - Verified progress is not upgraded beyond its evidence layer.
 - The first next step is executable and includes its acceptance condition.
 - Snapshot freshness matches the validator's `--check-current` result.
+- Exit 2 means stale, exit 3 means limited coverage, and exit 1 means invalid or check failed. Do not treat successful structure validation as a current snapshot. `--allow-limited` never waives stale state.
+- Inherited verification dates remain attached to their original evidence; the handoff update date does not imply those checks ran again.
 - The answer does not depend on producer-chat facts absent from the handoff or workspace.
 - Session inference and superseded ideas are not promoted to facts or silently converted into requirements.
 - The handoff contains no raw chat transcript, chain-of-thought, or repeated tool output; retained failed paths are concise and action-relevant.
 - For a non-Git project, a changed or missing critical file makes the handoff stale. An empty critical baseline is reported as limited freshness, not as a confirmed-current snapshot.
+- For a Git project, editing an already-dirty file again, changing staged content, or changing an untracked file makes the old snapshot stale.
 
 Record the blind test as passed only after reviewing the consumer output against these criteria. A structural self-test or a producer-session summary is not a substitute.

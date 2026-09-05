@@ -16,9 +16,11 @@ REQUIRED = (
     ROOT / "tools" / "install.py",
     ROOT / "tools" / "test_installer.py",
     ROOT / "tools" / "smoke_install.py",
+    ROOT / "tools" / "test_regressions.py",
     SKILL / "SKILL.md",
     SKILL / "agents" / "openai.yaml",
     SKILL / "scripts" / "validate_handoff.py",
+    SKILL / "scripts" / "manage_handoff.py",
     SKILL / "references" / "consumer-contract.md",
     SKILL / "references" / "evidence-patterns.md",
 )
