@@ -1,13 +1,30 @@
 # Optional Jev evidence review
 
-Read this only when the user enables Jev review for the current handoff, or an existing explicit authorization covers it. The complete base workflow works without Jev, an account, credentials, or network access. Jev review is off by default; installing this skill or finding a tool does not enable it.
+Read this only when the user enables Jev review for the current handoff, an existing explicit authorization covers it, or the user requests connection diagnosis. Diagnosis alone does not enable review or authorize a live test. The complete base workflow works without Jev, an account, credentials, or network access. Jev review is off by default; installing this skill or finding a tool does not enable it.
 
 ## Preconditions and compatibility
 
-- The user supplies their own eligible Jev access and an already available compatible tool. This skill supplies no API client, account, credentials, service endpoint, or required MCP dependency.
+- The user supplies their own eligible Jev access and an already available compatible tool. This skill supplies review instructions, not an API client, account, credentials, service endpoint, model configuration, or required MCP dependency. The host manages the connection and model selection; installing or updating this skill does not configure either.
 - Before sending evidence, confirm that the user's authorization covers the selected external review and account usage. Reuse applicable existing authorization; otherwise keep the base workflow available and ask before the external action. Tool availability, a local readiness result, or project access does not grant permission to send data.
 - Inspect the callable tool's current schema. A name such as `jev_evaluate` is a discovery hint, not proof of compatibility. Require a way to submit shared `state`, independent `questions`, and a Choice judgment with `supported`, `contradicted`, and `insufficient` outcomes, and to map typed answers back to questions. Follow the host schema for field casing and response envelopes. If the contract cannot be represented or validated, report the interface as incompatible and continue the base workflow.
 - Do not request or print a key, copy host configuration into the project, install tools, enable permissions, or bypass an approval restriction. Leave the user's existing connection under the host's control. Do not assume a fixed endpoint, model version, request limit, timeout, or provider eligibility policy.
+
+## Discovery and status
+
+1. When review is enabled or diagnosis is requested, inspect tools exposed to the current task, using host-supported tool discovery if available, then check the relevant schema. A tool missing from the initial list may still be discoverable. If no compatible tool is found, report the current task's discovery scope; do not infer that the whole machine lacks Jev configuration.
+2. For a connection diagnosis that needs configuration evidence, inspect only relevant host settings, accounting for the active profile or configuration root and applicable user/project layers. A missing project entry does not establish that user-level configuration is absent. Parse only necessary non-secret fields and report safe facts such as entry presence or enabled state; do not dump configuration, environment variables, command arguments, or credentials. Distinguish a saved entry from one actually loaded by this task. If effective configuration or loading cannot be established, leave the cause unknown and identify the smallest host-specific check that could resolve it. Do not scan unrelated profiles or change settings.
+3. Use an optional status tool only when its documented behavior is local and non-networking and readiness evidence would help the diagnosis. A tool named `jev_status` is only a hint. Status checks are not a mandatory preflight for review, and absence of a status tool does not make a compatible review tool unusable. Do not send a test inference just to turn local readiness into a success claim; any live request must fit the user's authorized review or explicit live-test scope.
+
+Report enablement separately from observed connection evidence. These are scoped observations, not an ordered ladder: local readiness and missing tools in the current task can coexist. Include the task/configuration scope and observation time when carrying a diagnosis forward; an older success does not prove present availability.
+
+| Observation | What can be reported |
+| --- | --- |
+| Review not enabled | Optional review is off. Unless diagnosis was requested, do not discover tools, inspect configuration, or call status/review tools. |
+| No compatible tool discovered in this task | Requested review was not performed here. State whether discovery was available or limited; configuration elsewhere remains unknown unless checked. |
+| Tool found but incompatible | The inspected interface cannot express or validate the review contract. This is not proof of missing configuration. |
+| Saved configuration or local status only | Report the observed layer and fact, such as a saved enabled entry or locally ready status. Neither proves that a compatible tool is loaded or that authentication, eligibility, network access, or model inference succeeds. |
+| Valid live review result | Only an actual authorized request with a validated successful response establishes that the submitted review succeeded at that time. It does not establish future availability or project acceptance. |
+| Failed or incomplete review | Report the observed error or incomplete result; do not replace it with an earlier readiness/success claim or infer that configuration is absent. |
 
 ## Prepare the smallest useful review
 

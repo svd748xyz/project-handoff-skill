@@ -15,6 +15,7 @@ Runtime: Python 3.10 or newer, standard library only. Git is optional; without G
 - Preview: when the user says preview, dry run, or do not write, validate the candidate without changing the target.
 - Focus: a supplied next-session focus reprioritizes next steps without redefining the project goal.
 - Optional Jev review: disabled by default. Enable only when the user requests Jev evidence review or has already established that preference for this skill; an explicit request to disable it takes precedence. Use the user's existing compatible tool and authorized data scope. Tool availability alone does not enable review. Normal handoff creation remains available without Jev.
+- Jev connection diagnosis: only when review is enabled or the user asks about the connection, follow [Jev discovery and status](references/jev-review.md#discovery-and-status). Connection and model settings belong to the host. A diagnostic request alone does not enable evidence review; ordinary handoffs need no tool discovery or readiness check.
 - Discovery pointer: edit `AGENTS.md` only when the user explicitly asks. Add at most one line directing long-running project work to read and freshness-check `项目开发交接.md`.
 
 ## 1. Resolve identity and coverage

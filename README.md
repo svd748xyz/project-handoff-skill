@@ -169,7 +169,7 @@ Decision-changing claims are reviewed separately as supported, contradicted, or 
 
 ## Optional Jev evidence review
 
-The complete base workflow works without Jev. Optional review is disabled by default and uses a compatible Jev tool already configured in the user's agent environment. Access and credentials belong to that user; this repository supplies no account, hosted service, credentials, network client, or mandatory MCP dependency.
+The complete base workflow works without Jev. Optional review is disabled by default and uses a compatible Jev tool already configured in the user's agent environment. This skill supplies review instructions; the host manages the connection and model settings. Access and credentials belong to that user; this repository supplies no account, hosted service, credentials, network client, model configuration, or mandatory MCP dependency. Installing the skill does not set up a Jev connection.
 
 Example requests (natural-language skill instructions, not Python command-line flags):
 
@@ -183,6 +183,8 @@ An established user preference for this skill can also enable review; explicitly
 Jev supplies advisory `supported`, `contradicted`, or `insufficient` judgments. The agent retains responsibility for the evidence and final result. Missing or incompatible tools, errors, timeouts, and invalid responses fall back to the base workflow; unresolved facts remain unresolved. Disagreement prompts a source recheck, not a confidence threshold or vote.
 
 See the [tool contract and synthetic example](skills/project-handoff/references/jev-review.md). The tool's exposed schema determines compatibility; a particular tool name or model version is not required. The two existing Python scripts remain local and unchanged, and the v3 handoff format is shared by both modes.
+
+Discovery and diagnosis run only when review is enabled or a connection check is requested. The agent distinguishes review being off, tools not discovered in the current task, saved configuration/local readiness, and a validated live result. Missing tools or an absent project configuration entry do not establish that the machine has no Jev setup; relevant user settings or an active host profile may differ. A local `ready` result does not verify provider access. A diagnosis request alone does not enable review or send a test inference. See [discovery and status](skills/project-handoff/references/jev-review.md#discovery-and-status).
 
 ## Validate
 
@@ -263,6 +265,8 @@ The [consumer contract](skills/project-handoff/references/consumer-contract.md) 
 非 Git 项目可以选择少量关键文件生成内容指纹。文件发生变化后，严格校验会将交接标记为过期，避免新会话继续使用旧结论。
 
 基础功能无需 Jev，默认不启用 Jev 复核。已经获得 Jev 访问资格并配置兼容工具的使用者，可以要求“使用 project-handoff，并启用 Jev 证据复核”；调用使用其自己的服务配置和账户。本仓库不包含作者密钥或本机配置。接口不可用时继续基础流程，存在证据缺口的结论仍保留为待确认；额外复核不等于用户验收或准确率保证。
+
+本技能提供调用规则，连接与模型配置由宿主管理，安装技能不会自动接入 Jev。仅在启用复核或明确要求诊断时检查相关状态；“当前任务未发现工具”不等于“本机没有配置”，“本地配置就绪”也不等于“真实调用成功”。单纯诊断不会自动发送测试推理请求。
 
 ## License
 
