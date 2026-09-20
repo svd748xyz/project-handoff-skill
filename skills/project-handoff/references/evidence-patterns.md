@@ -1,6 +1,6 @@
 # Evidence patterns
 
-Read only the row that matches the active project's deliverable. Evidence proves the stated layer only: artifact presence, implementation, verification, acceptance, and deployment are different claims.
+Use the claim-review and actionable-unknown guidance below, and read only the row that matches the active project's deliverable. Evidence proves the stated layer only: artifact presence, implementation, verification, acceptance, and deployment are different claims.
 
 | Deliverable | Useful evidence | Do not infer |
 |---|---|---|
@@ -10,6 +10,32 @@ Read only the row that matches the active project's deliverable. Evidence proves
 | External API, SaaS, database, or smart table | Active tenant/profile, real object IDs, current permission, write/read-back or equivalent live verification | Documentation, administrator identity, an AppKey, or a successful unrelated API call does not prove target-object access |
 | Website or deployment | Build result, deployed revision, stable URL, HTTP/browser behavior, data freshness or backend read-back | A local build or deployment command does not prove the public page is current and usable |
 | Research, specification, or decision document | Locked source boundary, dated authoritative sources, explicit unsupported claims, decision owner or user confirmation | Document existence does not prove the recommendation was accepted or implemented |
+
+## Review a material claim
+
+For claims that can change the goal, next action, acceptance, or material risk, separate statements whose evidence differs. For example, implementation, local test success, deployment, and user acceptance each need their own support. Locate and read the relevant source context before judging it; a path, exact quotation, or valid evidence field alone does not establish support.
+
+| Relation to the inspected evidence | Handoff treatment |
+|---|---|
+| Supported: the source establishes the claim within its stated scope | Retain the claim at that evidence layer, with its original date and applicable revision/environment; check freshness separately |
+| Contradicted: applicable evidence establishes the opposite | Correct or remove the claim; retain the observed failure or conflict only when useful for continuation |
+| Insufficient: the source is absent, unreadable, silent, narrower than the claim, or the material conflict remains unresolved | Preserve only the supported part; put the decision-changing gap under `[待确认]` with a resolution path |
+
+Apply the source-of-truth conflict order before choosing between sources. Compare like revisions and environments; a past success and a current failure can both be valid observations. A requirement states the intended behavior, not proof of its implementation. If the applicable evidence cannot resolve a conflict, do not select the convenient source or infer success from silence.
+
+These are evidence relations, not additional document status labels. Record the concise outcome and reference, not an internal review transcript. `[已验证]` may describe an observed failure: if the relevant run reports three failed tests, record that result instead of retaining “all tests passed.” Passing local tests alone leaves user acceptance unestablished; it does not prove the user rejected the work. Do not invent confidence percentages or use an overall score to compensate for a missing required check. The validator checks structure and evidence fields; the agent must judge what the sources actually establish.
+
+## Make a material unknown actionable
+
+For each retained `[待确认]` that changes continuation, state the missing evidence or decision, the smallest concrete check or source that can resolve it, and how the possible result affects the dependent action or completion claim. Describe the observable result needed, rather than writing only “investigate” or “confirm later.” Use concise prose in the existing flat item; no additional schema is needed.
+
+Example (illustrative, not a project requirement):
+
+```markdown
+- [待确认] 空输入是否被拒绝；缺证据：空输入用例结果；核验：运行该用例，检查约定的错误返回且无输出写入；影响：通过后可确认此异常路径，失败则修复后复测；其他独立用例可继续。
+```
+
+Route a resolvable technical gap to an in-scope, authorized check. Consult existing user decisions before requesting a missing preference or permission. When the source is unavailable, name the owner or event that can supply it. Only dependent work is blocked; irrelevant unknowns should be omitted under the context-hygiene rule. A proposed check is a next action, not evidence that the check ran, and no evidence judgment grants authorization.
 
 ## Time-sensitive evidence
 

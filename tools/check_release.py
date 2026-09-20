@@ -23,6 +23,7 @@ REQUIRED = (
     SKILL / "scripts" / "manage_handoff.py",
     SKILL / "references" / "consumer-contract.md",
     SKILL / "references" / "evidence-patterns.md",
+    SKILL / "references" / "jev-review.md",
 )
 FORBIDDEN_TEXT = (
     "C:" + "\\Users\\",

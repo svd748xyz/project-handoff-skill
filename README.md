@@ -31,7 +31,8 @@ project-handoff-skill/
     │   └── manage_handoff.py
     └── references/
         ├── consumer-contract.md
-        └── evidence-patterns.md
+        ├── evidence-patterns.md
+        └── jev-review.md
 ```
 
 ## Requirements
@@ -164,6 +165,25 @@ Each candidate statement is classified as user-confirmed, workspace-observed, or
 
 The handoff must not contain raw transcripts, chain-of-thought, secrets, repeated tool output, or superseded assistant proposals.
 
+Decision-changing claims are reviewed separately as supported, contradicted, or insufficiently evidenced. Critical unknowns identify the missing evidence, a concrete verification path, and how the result changes the next action. See [evidence patterns](skills/project-handoff/references/evidence-patterns.md).
+
+## Optional Jev evidence review
+
+The complete base workflow works without Jev. Optional review is disabled by default and uses a compatible Jev tool already configured in the user's agent environment. Access and credentials belong to that user; this repository supplies no account, hosted service, credentials, network client, or mandatory MCP dependency.
+
+Example requests (natural-language skill instructions, not Python command-line flags):
+
+```text
+Use $project-handoff with Jev evidence review.
+Use $project-handoff without Jev review.
+```
+
+An established user preference for this skill can also enable review; explicitly disabling it overrides that preference. Tool availability alone does not opt a project in. When enabled, the agent submits only selected non-sensitive claims and necessary source context within the user's authorized scope. The configured service may send those snippets to TypeSafe and incur usage on the user's account.
+
+Jev supplies advisory `supported`, `contradicted`, or `insufficient` judgments. The agent retains responsibility for the evidence and final result. Missing or incompatible tools, errors, timeouts, and invalid responses fall back to the base workflow; unresolved facts remain unresolved. Disagreement prompts a source recheck, not a confidence threshold or vote.
+
+See the [tool contract and synthetic example](skills/project-handoff/references/jev-review.md). The tool's exposed schema determines compatibility; a particular tool name or model version is not required. The two existing Python scripts remain local and unchanged, and the v3 handoff format is shared by both modes.
+
 ## Validate
 
 Run the built-in test suite:
@@ -227,6 +247,8 @@ Evidence statements in every section require an explicit verification date, a co
 
 Static validation checks structure, evidence formatting, identity consistency, and the selected snapshot coverage. It does not prove the truth of cited evidence or successful continuation by a new agent. For behavioral acceptance, follow `references/consumer-contract.md` in an isolated fresh session.
 
+The [consumer contract](skills/project-handoff/references/consumer-contract.md) includes focused evidence counterexamples and optional-Jev scenarios. Use simulated tool responses to check enablement, fallback, and disagreement without credentials or network calls. These simulations do not establish live Jev connectivity, model accuracy, or an improvement over the base workflow; evaluate those separately on the user's authorized inputs.
+
 ## Security and privacy
 
 - The validator is local and read-only except for its isolated temporary self-test workspace.
@@ -239,6 +261,8 @@ Static validation checks structure, evidence formatting, identity consistency, a
 这个 Skill 的目标不是复制旧会话，而是把旧会话中仍然影响项目推进的内容压缩成一个“最小充分状态包”。它保留目标、证据、进展、卡点、踩坑结论、下一步和验收条件，同时过滤原始聊天、重复日志、已推翻假设和未经确认的模型建议。
 
 非 Git 项目可以选择少量关键文件生成内容指纹。文件发生变化后，严格校验会将交接标记为过期，避免新会话继续使用旧结论。
+
+基础功能无需 Jev，默认不启用 Jev 复核。已经获得 Jev 访问资格并配置兼容工具的使用者，可以要求“使用 project-handoff，并启用 Jev 证据复核”；调用使用其自己的服务配置和账户。本仓库不包含作者密钥或本机配置。接口不可用时继续基础流程，存在证据缺口的结论仍保留为待确认；额外复核不等于用户验收或准确率保证。
 
 ## License
 

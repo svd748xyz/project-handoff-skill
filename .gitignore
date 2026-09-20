@@ -4,5 +4,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .venv/
+.env
+.env.*
+.mcp.json
+.codex/
 /项目开发交接.md
 /项目开发交接.md.candidate
