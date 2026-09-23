@@ -21,9 +21,18 @@ REQUIRED = (
     SKILL / "agents" / "openai.yaml",
     SKILL / "scripts" / "validate_handoff.py",
     SKILL / "scripts" / "manage_handoff.py",
+    SKILL / "scripts" / "process_handoff.py",
+    SKILL / "scripts" / "jev_client.py",
+    SKILL / "scripts" / "capture_handoff.py",
+    SKILL / "scripts" / "triage_handoff.py",
+    ROOT / "tools" / "test_process_handoff.py",
+    ROOT / "tools" / "test_jev_client.py",
+    ROOT / "tools" / "test_capture_handoff.py",
+    ROOT / "tools" / "test_triage_handoff.py",
     SKILL / "references" / "consumer-contract.md",
     SKILL / "references" / "evidence-patterns.md",
     SKILL / "references" / "jev-review.md",
+    SKILL / "references" / "process-workflow.md",
 )
 FORBIDDEN_TEXT = (
     "C:" + "\\Users\\",
