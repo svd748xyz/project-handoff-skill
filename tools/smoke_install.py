@@ -59,6 +59,15 @@ def main() -> int:
             print(result.stderr, end="", file=sys.stderr)
             return result.returncode
 
+        for name in ("process_handoff.py", "capture_handoff.py", "triage_handoff.py"):
+            result = subprocess.run(
+                [sys.executable, "-B", str(installed / "scripts" / name), "--help"], cwd=temporary,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            )
+            if result.returncode != 0:
+                print(result.stderr, end="", file=sys.stderr)
+                return result.returncode
+
     print("PASS: isolated skill installation")
     return 0
 

@@ -1,4 +1,4 @@
-# Project Handoff Skill
+# Project Handoff Skill 2.1.1
 
 `project-handoff` creates or refreshes a concise, evidence-backed `项目开发交接.md` so a fresh coding-agent session can continue a project without inheriting the full previous conversation.
 
@@ -9,6 +9,35 @@ It preserves current goals, verified progress, costly failure lessons, blockers,
 Built-in session history and memory help an agent retrieve context. This skill serves a different purpose: it produces a portable, reviewable project-state contract whose claims have evidence levels and invalidation conditions.
 
 It does not replace Git, tests, issues, ADRs, source documents, or an agent platform's own memory system.
+
+Version **2.1.1** assigns determined operations to rules, local semantic decisions to Jev, and overall understanding and handoff writing to the main model. Capture raw output, run triage, then follow the packet's next step. Routing uncertainty or unavailable inference preserves text directly; only claims, conflicts and ambiguous comparisons produce evidence tasks. Original records and 2.1.0 recovery reports remain readable. The handoff document format remains **3**.
+
+This is an explicit skill workflow. It acts on supplied output files and preserves their originals; it installs no host hook and does not replace native context management.
+
+## 下载与跨设备安装 / Download and install
+
+本仓库公开发布，可在不同设备或由其他使用者独立安装。只需要 Python 3.10+；核心脚本使用标准库，不依赖作者电脑、Codex 会话、业务文件或私有配置。授权采用 [MIT](LICENSE)。
+
+- [最新源码](https://github.com/svd748xyz/project-handoff-skill)：跟随 `main`。
+- [版本发布页](https://github.com/svd748xyz/project-handoff-skill/releases)：选择固定版本及下载包。
+- [2.1.1 版本说明](CHANGELOG.md)：查看此次分工、流程和兼容性变化。
+
+在目标设备下载并解压发行包，进入包含 `tools/` 和 `skills/` 的目录，然后执行：
+
+```text
+python -B tools/install.py --agent codex --scope user
+python -B tools/install.py --agent codex --scope user --apply
+```
+
+第一条显示安装位置，第二条执行安装。macOS/Linux 若只有 `python3` 命令，将 `python` 换成 `python3`；Windows 也可使用 `py -3`。Claude Code 将 `--agent codex` 换为 `--agent claude --explicit-only`。其他目标及项目级安装见下表。
+
+安装完成后，在新任务中调用 `$project-handoff`；Claude Code 使用 `/project-handoff`。需要 Jev 过程模式时，明确要求“开启过程模式，让 Jev 参与局部评定”。普通交接可直接离线使用。
+
+**已有旧版时：**先运行第一条命令确认实际目标目录；把旧 `project-handoff` 文件夹移动到技能扫描目录之外的备份位置，再执行安装。安装器不会覆盖现有目录。升级不需要删除项目中的交接文档或过程记录，2.1.0 的恢复报告仍可读取。
+
+**各设备独立配置 Jev：**安装包不携带密钥、账户或本机配置。需要联网评定的使用者，在自己的运行环境中配置 `TYPESAFE_API_KEY`，使启动编码代理的进程能读取它；请使用自己的凭据管理方式，不把密钥写进仓库或交接文档。没有 Jev 配置时，离线记录和交接仍可用。分发 skill 不会同时分发个人的项目记录、缓存或原始工具输出。
+
+The package is portable and self-contained: install it on each device with Python 3.10+, choose the agent or an explicit `--dest`, and invoke the skill in a new task. Live Jev routing uses each user's own environment credential; the release contains no account or project data. Back up an existing installation before upgrading because the installer deliberately refuses to overwrite it.
 
 ## Repository layout
 
@@ -28,11 +57,16 @@ project-handoff-skill/
     ├── agents/openai.yaml
     ├── scripts/
     │   ├── validate_handoff.py
-    │   └── manage_handoff.py
+    │   ├── manage_handoff.py
+    │   ├── capture_handoff.py
+    │   ├── triage_handoff.py
+    │   ├── process_handoff.py
+    │   └── jev_client.py
     └── references/
         ├── consumer-contract.md
         ├── evidence-patterns.md
-        └── jev-review.md
+        ├── jev-review.md
+        └── process-workflow.md
 ```
 
 ## Requirements
@@ -117,7 +151,7 @@ Then invoke:
 /project-handoff
 ```
 
-Claude Code ignores `agents/openai.yaml`. The shared skill description asks for explicit invocation, but if you require platform-enforced user-only invocation, add Claude Code's `disable-model-invocation: true` field to the frontmatter of the installed Claude-specific copy. Do not add that vendor extension to the shared package if you also want it to pass Codex's standard validator.
+Claude Code ignores `agents/openai.yaml`. If you require platform-enforced user-only invocation, add Claude Code's `disable-model-invocation: true` field to the frontmatter of the installed Claude-specific copy. Do not add that vendor extension to the shared package if you also want it to pass Codex's standard validator.
 
 The installer can perform that adaptation without modifying the shared source:
 
@@ -167,24 +201,45 @@ The handoff must not contain raw transcripts, chain-of-thought, secrets, repeate
 
 Decision-changing claims are reviewed separately as supported, contradicted, or insufficiently evidenced. Critical unknowns identify the missing evidence, a concrete verification path, and how the result changes the next action. See [evidence patterns](skills/project-handoff/references/evidence-patterns.md).
 
-## Optional Jev evidence review
+## Capture-first process mode and optional Jev
 
-The complete base workflow works without Jev. Optional review is disabled by default and uses a compatible Jev tool already configured in the user's agent environment. This skill supplies review instructions; the host manages the connection and model settings. Access and credentials belong to that user; this repository supplies no account, hosted service, credentials, network client, model configuration, or mandatory MCP dependency. Installing the skill does not set up a Jev connection.
-
-Example requests (natural-language skill instructions, not Python command-line flags):
+The ordinary handoff works offline. Process mode adds this path:
 
 ```text
-Use $project-handoff with Jev evidence review.
-Use $project-handoff without Jev review.
+tool output file → mechanical capture → rules / Jev routing → reading packet
+                                                        → specific evidence tasks, when needed
+                                                        → evidence-backed handoff
 ```
 
-An established user preference for this skill can also enable review; explicitly disabling it overrides that preference. Tool availability alone does not opt a project in. When enabled, the agent submits only selected non-sensitive claims and necessary source context within the user's authorized scope. The configured service may send those snippets to TypeSafe and incur usage on the user's account.
+Use it explicitly:
 
-Jev supplies advisory `supported`, `contradicted`, or `insufficient` judgments. The agent retains responsibility for the evidence and final result. Missing or incompatible tools, errors, timeouts, and invalid responses fall back to the base workflow; unresolved facts remain unresolved. Disagreement prompts a source recheck, not a confidence threshold or vote.
+```text
+Use $project-handoff in process mode: capture raw tool outputs, let Jev route the reading packet, and review uncertain evidence before handoff.
+Use $project-handoff without Jev.
+```
 
-See the [tool contract and synthetic example](skills/project-handoff/references/jev-review.md). The tool's exposed schema determines compatibility; a particular tool name or model version is not required. The two existing Python scripts remain local and unchanged, and the v3 handoff format is shared by both modes.
+An existing explicit preference continues to apply; disabling Jev takes precedence. The direct client uses `TYPESAFE_API_KEY`, the official System One endpoint and pinned `jev-1.13.0`; no SDK or MCP is needed. Installation alone does not authorize external review. Live mode sends necessary, non-sensitive context and evidence from the authorized task and may consume account usage.
 
-Discovery and diagnosis run only when review is enabled or a connection check is requested. The agent distinguishes review being off, tools not discovered in the current task, saved configuration/local readiness, and a validated live result. Missing tools or an absent project configuration entry do not establish that the machine has no Jev setup; relevant user settings or an active host profile may differ. A local `ready` result does not verify provider access. A diagnosis request alone does not enable review or send a test inference. See [discovery and status](skills/project-handoff/references/jev-review.md#discovery-and-status).
+The helpers have separate responsibilities:
+
+| Helper | Responsibility |
+|---|---|
+| `capture_handoff.py` | Read a UTF-8 output file locally, preserve its full bytes and a range/hash manifest, and generate immutable records in mechanical slices. No generated claim or API call. |
+| `triage_handoff.py` | Apply protected/recent/exact-duplicate rules, then optionally batch semantic relevance and duplicate/conflict questions. Produce a packet, audit report and measured reading sizes. Defaults offline. |
+| `process_handoff.py` | Retain structured-event compatibility and optional claim-support review. Protected records without claims send no questions; claim-bearing records send only the support question. |
+| `manage_handoff.py` | Preserve the existing identity, freshness, candidate validation, atomic replacement and read-back workflow. |
+
+Rules keep user constraints/corrections, decisions, blockers, acceptance boundaries, failures, unknown outcomes and claims. Record authorization/stop conditions and external-action receipts in protected categories. Exact duplicates keep a visible representative. None of these routing decisions needs a Jev request.
+
+For remaining records, Jev receives actual local excerpts and, where retrieved, a visible representative. Strong `noise` or `equivalent` choices can replace this record's display with a recovery reference. Claims, conflicts and uncertain comparisons create specific evidence tasks. Uncertain relevance, weak proposed omission, service failure and exceeded budgets preserve the full text directly, without a separate LLM relevance task. The main model follows the packet's next step, integrates the observations and checks important claim sources/currentness.
+
+Live triage uses at most eight batches, each at most four candidate records, eight questions and 24,000 encoded request bytes. Its probability/confidence/margin gates are starting settings, not accuracy guarantees. Successes are cached against exact context/evidence/questions and the pinned model; failures do not retry automatically. Source archives remain available in all cases.
+
+See [capture and triage commands](skills/project-handoff/references/process-workflow.md) and [decision contract, bounds and primary sources](skills/project-handoff/references/jev-review.md). Preserve historical test dates, skipped cases and untested paths; distinguish implemented source, uncommitted changes, installed copies, releases and deployments in the final handoff.
+
+Audit reports retain rule/model decisions, evidence tasks and execution details. Evaluate the workflow by reliable records, correct decision ownership, evidence-backed handoffs and successful continuation. Successful routing alone does not establish business acceptance.
+
+The existing `python -B tools/demo_process_handoff.py --out <new-directory>` demonstration is offline by default. Its explicit `--live` mode sends fictional claim-review fixtures through the existing account; it does not read real project data or establish capture-first routing accuracy.
 
 ## Validate
 
@@ -264,9 +319,9 @@ The [consumer contract](skills/project-handoff/references/consumer-contract.md) 
 
 非 Git 项目可以选择少量关键文件生成内容指纹。文件发生变化后，严格校验会将交接标记为过期，避免新会话继续使用旧结论。
 
-基础功能无需 Jev，默认不启用 Jev 复核。已经获得 Jev 访问资格并配置兼容工具的使用者，可以要求“使用 project-handoff，并启用 Jev 证据复核”；调用使用其自己的服务配置和账户。本仓库不包含作者密钥或本机配置。接口不可用时继续基础流程，存在证据缺口的结论仍保留为待确认；额外复核不等于用户验收或准确率保证。
+2.1.1 的过程模式是“工具原始输出落盘 → 机械留档 → 规则和 Jev 前置分流 → 主模型整体理解与交接”。规则负责保护、精确去重和保守保留；Jev 的局部判断直接驱动分支；主模型处理待核实主张、冲突和比较歧义，并形成项目状态和下一步。相关性不明确或接口不可用时直接保留原文，不再制造逐条复核任务。原记录始终可恢复。
 
-本技能提供调用规则，连接与模型配置由宿主管理，安装技能不会自动接入 Jev。仅在启用复核或明确要求诊断时检查相关状态；“当前任务未发现工具”不等于“本机没有配置”，“本地配置就绪”也不等于“真实调用成功”。单纯诊断不会自动发送测试推理请求。
+可这样调用：`使用 $project-handoff 开启过程模式，规则负责确定事项，Jev 负责局部评定并直接驱动流程，LLM 负责整体理解与交接。` 普通调用仍可离线工作。历史未覆盖项、未提交状态、安装状态和业务验收分别保留。
 
 ## License
 
