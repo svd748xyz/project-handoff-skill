@@ -27,7 +27,8 @@ class CaptureTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="capture-handoff-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Use the physical temporary root; test-created links stay untrusted.
+        self.root = Path(self.temp.name).resolve()
         self.store = self.root / "store"
         self.input = self.root / "工具输出.txt"
         self.context = {"project_id": PROJECT, "goal": "Repair parser", "boundaries": ["Local verification only"],

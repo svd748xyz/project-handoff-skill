@@ -29,7 +29,8 @@ class TriageTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        # Use the physical temporary root; test-created links stay untrusted.
+        self.root = Path(tmp.name).resolve()
         self.store = self.root / 'store'
         self.context = {'project_id': PROJECT, 'goal': 'CSV parser decimal precision',
                         'boundaries': ['Keep headers intact'], 'next_action': 'Test malformed CSV'}

@@ -25,7 +25,8 @@ class ProcessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="process-handoff-")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # macOS exposes its temporary root through /var -> /private/var.
+        self.root = Path(self.temp.name).resolve()
         self.store = self.root / "store"
         self.context = {"project_id": PROJECT, "goal": "Implement parser", "boundaries": ["Local parser only"], "next_action": "Verify invalid input"}
         self.run_number = 0
