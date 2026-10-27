@@ -1,6 +1,6 @@
 interface:
-  display_name: "Project Handoff 2.1"
-  short_description: "维护有证据的项目交接，支持原始记录前置筛选与灰区复核，供新会话续接"
-  default_prompt: "Use $project-handoff to verify the active project facts and create, preview, or update 项目开发交接.md in the current project directory."
+  display_name: "Project Handoff 3.0"
+  short_description: "把一个会话提炼成可交接的短文档，让新会话快速接上目标、证据与下一步"
+  default_prompt: "Use $project-handoff to distill this session into 项目开发交接.md and save it safely in the current project directory."
 policy:
   allow_implicit_invocation: false

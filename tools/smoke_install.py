@@ -15,6 +15,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "skills" / "project-handoff"
 
 
+def _run(command: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="project-handoff-install-") as temporary:
         installed = Path(temporary) / "skills" / "project-handoff"
@@ -36,37 +48,36 @@ def main() -> int:
             return 1
 
         validator = installed / "scripts" / "validate_handoff.py"
-        result = subprocess.run(
-            [sys.executable, "-B", str(validator), "--self-test"],
-            cwd=temporary,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
+        result = _run([sys.executable, "-B", str(validator), "--self-test"], temporary)
         if result.returncode != 0:
             print(result.stdout, end="")
             print(result.stderr, end="", file=sys.stderr)
             return result.returncode
 
         helper = installed / "scripts" / "manage_handoff.py"
-        result = subprocess.run(
-            [sys.executable, "-B", str(helper), "--help"], cwd=temporary,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
+        result = _run([sys.executable, "-B", str(helper), "--help"], temporary)
         if result.returncode != 0:
             print(result.stderr, end="", file=sys.stderr)
             return result.returncode
 
-        for name in ("process_handoff.py", "capture_handoff.py", "triage_handoff.py"):
-            result = subprocess.run(
-                [sys.executable, "-B", str(installed / "scripts" / name), "--help"], cwd=temporary,
-                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-            )
-            if result.returncode != 0:
-                print(result.stderr, end="", file=sys.stderr)
-                return result.returncode
+        result = _run(
+            [
+                sys.executable,
+                "-B",
+                str(helper),
+                "prepare",
+                "--root",
+                temporary,
+                "--session-scope",
+                "isolated install smoke test",
+            ],
+            temporary,
+        )
+        if result.returncode != 0 or "format-version: 4" not in result.stdout:
+            print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            print("ERROR: prepare did not produce format-4 metadata")
+            return 1
 
     print("PASS: isolated skill installation")
     return 0
