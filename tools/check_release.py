@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "project-handoff"
 REQUIRED = (
     ROOT / "README.md",
+    ROOT / "CHANGELOG.md",
     ROOT / "LICENSE",
     ROOT / "tools" / "install.py",
     ROOT / "tools" / "test_installer.py",
@@ -21,16 +22,14 @@ REQUIRED = (
     SKILL / "agents" / "openai.yaml",
     SKILL / "scripts" / "validate_handoff.py",
     SKILL / "scripts" / "manage_handoff.py",
+    SKILL / "references" / "consumer-contract.md",
+    SKILL / "references" / "evidence-patterns.md",
+)
+OBSOLETE = (
     SKILL / "scripts" / "process_handoff.py",
     SKILL / "scripts" / "jev_client.py",
     SKILL / "scripts" / "capture_handoff.py",
     SKILL / "scripts" / "triage_handoff.py",
-    ROOT / "tools" / "test_process_handoff.py",
-    ROOT / "tools" / "test_jev_client.py",
-    ROOT / "tools" / "test_capture_handoff.py",
-    ROOT / "tools" / "test_triage_handoff.py",
-    SKILL / "references" / "consumer-contract.md",
-    SKILL / "references" / "evidence-patterns.md",
     SKILL / "references" / "jev-review.md",
     SKILL / "references" / "process-workflow.md",
 )
@@ -47,6 +46,9 @@ def main() -> int:
     for path in REQUIRED:
         if not path.is_file():
             errors.append(f"missing required file: {path.relative_to(ROOT)}")
+    for path in OBSOLETE:
+        if path.exists():
+            errors.append(f"obsolete file still present: {path.relative_to(ROOT)}")
 
     forbidden_artifacts = sorted(
         path.relative_to(ROOT).as_posix()
@@ -72,6 +74,7 @@ def main() -> int:
 
     skill_text = (SKILL / "SKILL.md").read_text(encoding="utf-8") if (SKILL / "SKILL.md").is_file() else ""
     frontmatter = re.match(r"^---\n(?P<body>.*?)\n---\n", skill_text, re.DOTALL)
+    version = ""
     if not frontmatter:
         errors.append("SKILL.md is missing YAML frontmatter")
     else:
@@ -80,6 +83,25 @@ def main() -> int:
             errors.append("SKILL.md name must be project-handoff")
         if not re.search(r"(?m)^description:\s*\S.+$", body):
             errors.append("SKILL.md must contain a non-empty description")
+        match = re.search(r'(?m)^\s+version:\s*"?(\d+\.\d+\.\d+)"?\s*$', body)
+        if not match:
+            errors.append("SKILL.md metadata must contain a semantic version")
+        else:
+            version = match.group(1)
+
+    if version:
+        major_minor = ".".join(version.split(".")[:2])
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        if f"# Project Handoff Skill {version}" not in readme:
+            errors.append(f"README.md title must be '# Project Handoff Skill {version}'")
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        if f"## {version}" not in changelog:
+            errors.append(f"CHANGELOG.md must contain a '## {version}' section")
+        agent = (SKILL / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        if f'display_name: "Project Handoff {major_minor}"' not in agent:
+            errors.append(
+                f'agents/openai.yaml display_name must be "Project Handoff {major_minor}"'
+            )
 
     for error in errors:
         print(f"ERROR: {error}")

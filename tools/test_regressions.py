@@ -1,315 +1,297 @@
 #!/usr/bin/env python3
-"""Behavioral regressions for snapshot, validation, and optimistic saving."""
+"""Regression tests for the format-4 session handoff validator and safe save."""
 
 from __future__ import annotations
 
 import contextlib
 import io
-import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest import mock
+
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "project-handoff" / "scripts"))
-import validate_handoff as v
-import manage_handoff as manager
+SCRIPTS = ROOT / "skills" / "project-handoff" / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+
+import manage_handoff  # noqa: E402
+import validate_handoff as validator  # noqa: E402
 
 
-class HandoffTests(unittest.TestCase):
+def sample_document(
+    *,
+    revision: str = "not-a-git-repository",
+    state: str = "not-a-git-repository",
+    scope: str = "Recenter the handoff skill on single-session distillation.",
+) -> str:
+    return f"""<!-- project-handoff-meta
+format-version: 4
+updated-at: 2026-10-27T10:00:00+08:00
+session-scope: {scope}
+source-revision: {revision}
+working-tree-state: {state}
+-->
+# 项目开发交接
+
+> 新会话先读本文件，从“下一步第一个动作”继续；未验证项不要当作已完成。
+
+<!-- section: goal -->
+## 本次会话目标
+- 把技能从项目状态档案改成会话提炼。
+
+<!-- section: work -->
+## 做了什么
+- 重写 `SKILL.md` 为七节会话模板。
+
+<!-- section: decisions -->
+## 关键决策与理由
+- 去掉 Jev 和项目身份，因为本次目标是会话提炼。
+
+<!-- section: verification -->
+## 验证情况
+- [已验证] `python -m pytest tools -q` 在 2026-10-27 通过，18 passed。
+- [已实现][未验证] 新的安装器尚未在 Claude Code 中实测。
+
+<!-- section: pitfalls -->
+## 踩坑与失败路径
+- 旧模板要求 project-id，导致每次都要维护项目身份；新格式不再要求。
+
+<!-- section: open -->
+## 未决问题
+- [待确认] 是否保留旧格式文档的读取兼容；影响：决定是否增加迁移提示。
+
+<!-- section: next -->
+## 下一步第一个动作
+- 在隔离会话中做一次消费测试；验收条件：新会话能复述目标并执行第一个动作。
+"""
+
+
+class ValidatorTests(unittest.TestCase):
+    def test_valid_document_passes(self):
+        report = validator.validate_text(sample_document())
+        self.assertEqual([], report.errors)
+        self.assertEqual(0, report.exit_code())
+
+    def test_missing_section_fails(self):
+        head, blocks = validator._split_sections(sample_document())
+        text = validator._join_sections(
+            head, [block for block in blocks if block[0] != "verification"]
+        )
+        report = validator.validate_text(text)
+        self.assertTrue(any("verification" in error for error in report.errors))
+
+    def test_section_order_is_enforced(self):
+        text = validator._swap_sections(sample_document(), "goal", "work")
+        report = validator.validate_text(text)
+        self.assertTrue(any("in order" in error for error in report.errors))
+
+    def test_duplicate_section_fails(self):
+        head, blocks = validator._split_sections(sample_document())
+        text = validator._join_sections(head, blocks + [blocks[0]])
+        report = validator.validate_text(text)
+        self.assertTrue(any("must appear once" in error for error in report.errors))
+
+    def test_empty_section_fails(self):
+        text = validator._empty_section(sample_document(), "goal")
+        report = validator.validate_text(text)
+        self.assertTrue(any("'goal' is empty" in error for error in report.errors))
+
+    def test_wrong_format_version_fails(self):
+        text = sample_document().replace("format-version: 4", "format-version: 3")
+        report = validator.validate_text(text)
+        self.assertTrue(any("format-version" in error for error in report.errors))
+
+    def test_missing_metadata_key_fails(self):
+        text = sample_document().replace("session-scope: ", "unused-scope: ")
+        report = validator.validate_text(text)
+        self.assertTrue(any("session-scope" in error for error in report.errors))
+
+    def test_updated_at_requires_timezone(self):
+        text = sample_document().replace(
+            "2026-10-27T10:00:00+08:00", "2026-10-27T10:00:00"
+        )
+        report = validator.validate_text(text)
+        self.assertTrue(any("timezone" in error for error in report.errors))
+
+    def test_verified_claim_requires_evidence(self):
+        text = sample_document().replace(
+            "`python -m pytest tools -q` 在 2026-10-27 通过，18 passed。", "测试通过。"
+        )
+        report = validator.validate_text(text)
+        self.assertTrue(any("needs a command" in error for error in report.errors))
+
+    def test_verified_claim_with_command_passes(self):
+        report = validator.validate_text(sample_document())
+        self.assertFalse(any("needs a command" in error for error in report.errors))
+
+    def test_legacy_status_label_rejected(self):
+        text = sample_document().replace("[待确认]", "[进行中]")
+        report = validator.validate_text(text)
+        self.assertTrue(
+            any("unsupported status label" in error for error in report.errors)
+        )
+
+    def test_secret_is_rejected(self):
+        text = sample_document().replace(
+            "把技能从项目状态档案改成会话提炼。", "password: hunter2"
+        )
+        report = validator.validate_text(text)
+        self.assertTrue(any("secret assignment" in error for error in report.errors))
+
+    def test_oversized_document_is_rejected(self):
+        text = sample_document() + "\n" + "x" * (validator.LENGTH_LIMIT + 100)
+        report = validator.validate_text(text)
+        self.assertTrue(any("too large" in error for error in report.errors))
+
+    def test_wrong_heading_fails(self):
+        text = sample_document().replace("## 验证情况", "## 别的标题")
+        report = validator.validate_text(text)
+        self.assertTrue(any("must start with" in error for error in report.errors))
+
+
+class SaveTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="handoff-regression-")
-        self.addCleanup(self.temp.cleanup)
+        self.temp = tempfile.TemporaryDirectory(prefix="project-handoff-save-")
         self.root = Path(self.temp.name)
-        self.requirements = self.root / "requirements.md"
-        self.requirements.write_text("baseline\n", encoding="utf-8")
-        self.valid = v._sample_document(self.root, ["requirements.md"])
-        self.target = self.root / manager.TARGET_NAME
-        self.candidate = self.root / (manager.TARGET_NAME + ".candidate")
+        self.target = self.root / validator.TARGET_NAME
+        self.candidate = self.root / (validator.TARGET_NAME + ".candidate")
 
-    def git(self, *args):
-        result = v._run_git(self.root, *args)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result
+    def tearDown(self):
+        self.temp.cleanup()
 
-    def repo(self):
-        if not shutil.which("git"):
-            self.skipTest("Git is unavailable")
-        self.git("init", "--quiet")
-        self.git("config", "user.name", "Handoff Test")
-        self.git("config", "user.email", "handoff@example.invalid")
-        self.git("config", "core.hooksPath", str(self.root / "no-hooks"))
-        self.git("config", "commit.gpgsign", "false")
-        self.git("add", "requirements.md")
-        self.git("commit", "--quiet", "-m", "baseline")
-
-    def draft(self, critical=None):
-        block = manager.prepare(self.root, self.root, "example-parser", "workspace inspected",
-                                ["requirements.md"] if critical is None else critical)
-        text = v.META_BLOCK_RE.sub(lambda _: block, self.valid, count=1)
-        self.candidate.write_text(text, encoding="utf-8")
-        return text
-
-    def save(self, **kwargs):
-        with contextlib.redirect_stdout(io.StringIO()):
-            return manager.save(self.root, self.root, **kwargs)
-
-    def test_dirty_file_edited_again_is_stale(self):
-        self.repo()
-        self.requirements.write_text("first dirty", encoding="utf-8")
-        text = self.draft(critical=[])
-        self.requirements.write_text("second dirty", encoding="utf-8")
-        report = v.validate_text(text, current_root=self.root)
-        self.assertEqual(report.exit_code(), 2)
-
-    def test_staged_content_changes_with_same_working_bytes(self):
-        self.repo()
-        self.requirements.write_text("stage A", encoding="utf-8")
-        self.git("add", "requirements.md")
-        self.requirements.write_text("working", encoding="utf-8")
-        first = v._git_snapshot(self.root)
-        self.requirements.write_text("stage B", encoding="utf-8")
-        self.git("add", "requirements.md")
-        self.requirements.write_text("working", encoding="utf-8")
-        self.assertNotEqual(first, v._git_snapshot(self.root))
-
-    def test_untracked_file_content_and_nested_membership(self):
-        self.repo()
-        folder = self.root / "new files"
-        folder.mkdir()
-        path = folder / "中文.txt"
-        path.write_bytes(b"one")
-        first = v._git_snapshot(self.root)
-        path.write_bytes(b"two")
-        second = v._git_snapshot(self.root)
-        self.assertNotEqual(first, second)
-        (folder / "extra.txt").write_bytes(b"new")
-        self.assertNotEqual(second, v._git_snapshot(self.root))
-
-    def test_rename_and_deletion(self):
-        self.repo()
-        self.git("mv", "requirements.md", "renamed file.md")
-        first = v._git_snapshot(self.root)
-        (self.root / "renamed file.md").unlink()
-        self.assertNotEqual(first, v._git_snapshot(self.root))
-
-    def test_unborn_repository(self):
-        if not shutil.which("git"):
-            self.skipTest("Git is unavailable")
-        self.git("init", "--quiet")
-        result = v._git_snapshot(self.root)
-        self.assertEqual(result.revision, "unborn")
-        self.assertEqual(result.tree_state, "dirty")
-
-    def test_subdirectory_scope(self):
-        self.repo()
-        nested = self.root / "subproject"
-        nested.mkdir()
-        (nested / "app.txt").write_bytes(b"first")
-        first = v._git_snapshot(nested)
-        self.requirements.write_bytes(b"unrelated outside scope")
-        self.assertEqual(first, v._git_snapshot(nested))
-        (nested / "app.txt").write_bytes(b"second")
-        self.assertNotEqual(first, v._git_snapshot(nested))
-
-    def test_handoff_artifacts_excluded_but_nested_handoff_included(self):
-        self.repo()
-        first = v._git_snapshot(self.root)
-        for suffix in ("", ".candidate", ".lock"):
-            (self.root / (manager.TARGET_NAME + suffix)).write_bytes(b"handoff")
-        self.assertEqual(first, v._git_snapshot(self.root))
-        nested = self.root / "nested"
-        nested.mkdir()
-        (nested / manager.TARGET_NAME).write_bytes(b"another project")
-        self.assertNotEqual(first, v._git_snapshot(self.root))
-
-    def test_missing_git_uses_critical_files(self):
-        with patch.object(v, "_run_git", side_effect=FileNotFoundError("no git")):
-            report = v.validate_text(self.valid, current_root=self.root)
-        self.assertEqual(report.exit_code(strict=True), 0)
-
-    def test_git_permission_error_is_not_non_git(self):
-        error = subprocess.CompletedProcess(["git"], 128, "", "fatal: detected dubious ownership")
-        with patch.object(v, "_run_git", return_value=error):
-            report = v.validate_text(self.valid, current_root=self.root)
-        self.assertEqual(report.exit_code(), 1)
-        self.assertTrue(report.errors)
-
-    def test_nonexistent_root_rejected(self):
-        with self.assertRaises(ValueError):
-            v._git_snapshot(self.root / "missing")
-
-    def test_plain_prose_table_and_nested_list_cannot_bypass(self):
-        original = "1. 补充输入测试；验收条件：正常、空值和非法输入均有可复现结果。"
-        for replacement in ("继续开发。", "| 继续开发 |", "1. 继续开发；验收条件：测试通过。\n   - 未定义验收的第二项"):
-            with self.subTest(replacement=replacement):
-                self.assertFalse(v.validate_text(self.valid.replace(original, replacement)).ok)
-
-    def test_current_and_other_section_strong_claims_need_evidence(self):
-        for label in ("[已验证]", "[用户验收]", "[已部署-已回读]"):
-            text = self.valid.replace("[已实现][未验证] 解析入口已经存在。", label + " 全部功能完成。")
-            self.assertFalse(v.validate_text(text).ok)
-            text = self.valid.replace("实现本地解析器，不包含云端部署。", label + " 全部功能完成。")
-            self.assertFalse(v.validate_text(text).ok)
-
-    def test_session_relative_and_invalid_dates_rejected(self):
-        for replacement in ("当前会话", "2026-99-31"):
-            text = self.valid.replace("本次核验日期 2026-08-31", "核验日期 " + replacement)
-            self.assertFalse(v.validate_text(text).ok)
-
-    def test_scope_and_nonempty_acceptance_required(self):
-        self.assertFalse(v.validate_text(self.valid.replace("证据范围为入口文件检查，", "")).ok)
-        text = self.valid.replace("验收条件：正常、空值和非法输入均有可复现结果。", "验收条件：")
-        self.assertFalse(v.validate_text(text).ok)
-
-    def test_heading_cannot_hide_strong_claim(self):
-        self.assertFalse(v.validate_text(self.valid + "\n## [已验证] 全部通过\n").ok)
-
-    def test_indented_continuation_is_supported(self):
-        text = self.valid.replace("1. 补充输入测试；验收条件：", "1. 补充输入测试；\n   验收条件：")
-        self.assertTrue(v.validate_text(text).ok)
-
-    def test_symlink_hashes_link_without_following_external_content(self):
-        self.repo()
-        with tempfile.TemporaryDirectory(prefix="handoff-external-") as external:
-            source = Path(external) / "outside.txt"
-            source.write_bytes(b"outside")
-            link = self.root / "link.txt"
-            try:
-                link.symlink_to(source)
-            except OSError:
-                self.skipTest("symlinks require an unavailable OS permission")
-            first = v._git_snapshot(self.root)
-            source.write_bytes(b"changed outside")
-            self.assertEqual(first, v._git_snapshot(self.root))
-            link.unlink()
-            link.symlink_to(Path(external) / "different.txt")
-            self.assertNotEqual(first, v._git_snapshot(self.root))
-
-    def test_dirty_submodule_content_changes(self):
-        self.repo()
-        with tempfile.TemporaryDirectory(prefix="handoff-submodule-") as external:
-            source = Path(external)
-            for args in (("init", "--quiet"), ("config", "user.name", "Handoff Test"),
-                         ("config", "user.email", "handoff@example.invalid"),
-                         ("config", "commit.gpgsign", "false"),
-                         ("config", "core.hooksPath", str(source / "no-hooks"))):
-                result = v._run_git(source, *args)
-                self.assertEqual(result.returncode, 0, result.stderr)
-            (source / "file.txt").write_bytes(b"base")
-            self.assertEqual(v._run_git(source, "add", "file.txt").returncode, 0)
-            self.assertEqual(v._run_git(source, "commit", "--quiet", "-m", "base").returncode, 0)
-            self.git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", str(source), "nested")
-            self.git("commit", "--quiet", "-am", "add local submodule")
-            path = self.root / "nested" / "file.txt"
-            path.write_bytes(b"dirty first")
-            first = v._git_snapshot(self.root)
-            path.write_bytes(b"dirty second")
-            self.assertNotEqual(first, v._git_snapshot(self.root))
-
-    def test_strict_failure_never_prints_pass(self):
-        self.target.write_text(self.valid + "\n联系：person@example.com\n", encoding="utf-8")
+    def _run(self, *args: str) -> tuple[int, str]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = v.main([str(self.target), "--strict"])
-        self.assertEqual(code, 1)
-        self.assertNotIn("PASS:", output.getvalue())
+            code = manage_handoff.main(list(args))
+        return code, output.getvalue()
 
-    def test_limited_is_distinct_and_allow_limited_does_not_waive_stale(self):
-        self.draft(critical=[])
-        report = v.validate_file(self.candidate, current_root=self.root)
-        self.assertEqual(report.exit_code(strict=True), 3, report)
-        self.assertEqual(report.exit_code(strict=True, allow_limited=True), 0)
-        report.stale.append("changed")
-        self.assertEqual(report.exit_code(strict=True, allow_limited=True), 2)
-
-    def test_prepare_read_only_and_preserves_identity_without_refreshing_claim_dates(self):
-        before = sorted(self.root.iterdir())
-        block = manager.prepare(self.root, self.root, "example-parser", "workspace", ["requirements.md"])
-        self.assertEqual(before, sorted(self.root.iterdir()))
-        self.target.write_text(v.META_BLOCK_RE.sub(lambda _: block, self.valid), encoding="utf-8")
-        old_id = manager._metadata(block)["project-id"]
-        text = self.draft()
-        self.assertEqual(manager._metadata(text)["project-id"], old_id)
-        self.assertIn("本次核验日期 2026-08-31", text)
-
-    def test_preview_changes_no_files(self):
-        self.draft()
-        before = {path.name: path.read_bytes() for path in self.root.iterdir()}
-        self.assertEqual(self.save(preview=True), 0)
-        self.assertEqual(before, {path.name: path.read_bytes() for path in self.root.iterdir()})
-
-    def test_atomic_create_then_update_and_readback(self):
-        text = self.draft()
-        self.assertEqual(self.save(), 0)
-        self.assertEqual(self.target.read_text(encoding="utf-8"), text)
-        self.assertFalse(self.candidate.exists())
-        text = self.draft().replace("尚未验证非法输入。", "等待确认新的输入边界。")
-        self.candidate.write_text(text, encoding="utf-8")
-        self.assertEqual(self.save(), 0)
-        self.assertEqual(self.target.read_text(encoding="utf-8"), text)
-        self.assertFalse((self.root / (manager.TARGET_NAME + ".lock")).exists())
-
-    def test_git_save_does_not_invalidate_its_own_snapshot(self):
-        self.repo()
-        self.requirements.write_bytes(b"dirty")
-        self.draft()
-        self.assertEqual(self.save(), 0)
-        report = v.validate_file(self.target, current_root=self.root)
-        self.assertEqual(report.exit_code(strict=True), 0, report)
-
-    def test_concurrent_target_change_preserved(self):
-        self.target.write_text(self.valid, encoding="utf-8")
-        self.draft()
-        changed = self.valid + "\nConcurrent editor\n"
-        self.target.write_text(changed, encoding="utf-8")
-        with self.assertRaises(ValueError):
-            self.save()
-        self.assertEqual(self.target.read_text(encoding="utf-8"), changed)
-        self.assertTrue(self.candidate.exists())
-
-    def test_project_change_blocks_save_and_preserves_target(self):
-        self.target.write_text(self.valid, encoding="utf-8")
-        old = self.target.read_bytes()
-        self.draft()
-        self.requirements.write_bytes(b"new requirement")
-        self.assertEqual(self.save(), 2)
-        self.assertEqual(self.target.read_bytes(), old)
-
-    def test_bad_candidate_and_identity_change_preserve_target(self):
-        self.target.write_text(self.valid, encoding="utf-8")
-        old = self.target.read_bytes()
-        self.draft()
-        text = self.candidate.read_text(encoding="utf-8").replace("[已实现][未验证]", "[已验证]")
-        self.candidate.write_text(text, encoding="utf-8")
-        self.assertEqual(self.save(), 1)
-        self.assertEqual(self.target.read_bytes(), old)
-        with self.assertRaises(ValueError):
-            manager.prepare(self.root, self.root, "different-project", "workspace", [])
-
-    def test_existing_lock_preserved(self):
-        self.draft()
-        lock = self.root / (manager.TARGET_NAME + ".lock")
-        lock.write_bytes(b"another writer")
-        with self.assertRaises(FileExistsError):
-            self.save()
-        self.assertEqual(lock.read_bytes(), b"another writer")
+    def test_prepare_prints_metadata_without_writing(self):
+        code, output = self._run(
+            "prepare", "--root", str(self.root), "--session-scope", "test scope"
+        )
+        self.assertEqual(0, code)
+        self.assertIn("format-version: 4", output)
+        self.assertIn("session-scope: test scope", output)
+        self.assertIn("source-revision: not-a-git-repository", output)
         self.assertFalse(self.target.exists())
 
-    def test_replace_failure_preserves_target_and_candidate(self):
-        self.target.write_text(self.valid, encoding="utf-8")
-        old = self.target.read_bytes()
-        self.draft()
-        with patch.object(manager.os, "replace", side_effect=PermissionError("locked")):
-            with self.assertRaises(PermissionError):
-                self.save()
-        self.assertEqual(self.target.read_bytes(), old)
+    def test_prepare_rejects_multiline_scope(self):
+        with self.assertRaises(ValueError):
+            manage_handoff.prepare(self.root, "line one\nline two")
+
+    def test_preview_writes_nothing(self):
+        self.candidate.write_text(sample_document(), encoding="utf-8")
+        code, output = self._run("save", "--root", str(self.root), "--preview")
+        self.assertEqual(0, code)
+        self.assertIn("PASS", output)
+        self.assertFalse(self.target.exists())
         self.assertTrue(self.candidate.exists())
+
+    def test_save_creates_and_reads_back(self):
+        self.candidate.write_text(sample_document(), encoding="utf-8")
+        code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(0, code)
+        self.assertIn("SAVED", output)
+        self.assertEqual(sample_document(), self.target.read_text(encoding="utf-8"))
+        self.assertFalse(self.candidate.exists())
+
+    def test_save_updates_existing(self):
+        self.target.write_text(sample_document(scope="old scope"), encoding="utf-8")
+        self.candidate.write_text(sample_document(scope="new scope"), encoding="utf-8")
+        code, _ = self._run("save", "--root", str(self.root))
+        self.assertEqual(0, code)
+        self.assertIn("new scope", self.target.read_text(encoding="utf-8"))
+
+    def test_invalid_candidate_preserves_target_and_candidate(self):
+        self.target.write_text(sample_document(scope="old scope"), encoding="utf-8")
+        broken = sample_document(scope="new scope").replace(
+            "## 验证情况", "## 错误标题"
+        )
+        self.candidate.write_text(broken, encoding="utf-8")
+        code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("must start with", output)
+        self.assertIn("old scope", self.target.read_text(encoding="utf-8"))
+        self.assertTrue(self.candidate.exists())
+
+    def test_target_change_during_save_aborts(self):
+        self.target.write_text(sample_document(scope="old scope"), encoding="utf-8")
+        self.candidate.write_text(sample_document(scope="new scope"), encoding="utf-8")
+        original = validator.validate_text
+        calls = {"count": 0}
+
+        def racing_validate(text, *args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                self.target.write_text(
+                    sample_document(scope="concurrent writer"), encoding="utf-8"
+                )
+            return original(text, *args, **kwargs)
+
+        with mock.patch.object(
+            manage_handoff.validator, "validate_text", side_effect=racing_validate
+        ):
+            code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("changed while saving", output)
+        self.assertIn("concurrent writer", self.target.read_text(encoding="utf-8"))
+
+    def test_candidate_not_utf8_fails(self):
+        self.candidate.write_bytes(b"\xff\xfe")
+        code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("UTF-8", output)
+
+    def test_missing_candidate_fails(self):
+        code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("candidate not found", output)
+
+    def test_directory_target_is_rejected(self):
+        self.target.mkdir()
+        self.candidate.write_text(sample_document(), encoding="utf-8")
+        code, output = self._run("save", "--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("regular files", output)
+
+    def test_strict_warnings_block_save(self):
+        text = sample_document() + "\n- example@example.com\n"
+        self.candidate.write_text(text, encoding="utf-8")
+        code, output = self._run("save", "--root", str(self.root), "--strict")
+        self.assertEqual(1, code)
+        self.assertIn("possible email", output)
+        self.assertFalse(self.target.exists())
+
+    @unittest.skipUnless(shutil.which("git"), "git is not installed")
+    def test_prepare_reads_git_revision_and_state(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        (self.root / "a.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", "a.txt"], cwd=self.root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=test",
+                "commit",
+                "-qm",
+                "init",
+            ],
+            cwd=self.root,
+            check=True,
+        )
+        block = manage_handoff.prepare(self.root, "git session")
+        self.assertRegex(block, r"source-revision: [0-9a-f]{40}")
+        self.assertIn("working-tree-state: clean", block)
+
+        (self.root / "a.txt").write_text("changed", encoding="utf-8")
+        block = manage_handoff.prepare(self.root, "git session")
+        self.assertIn("working-tree-state: dirty", block)
 
 
 if __name__ == "__main__":

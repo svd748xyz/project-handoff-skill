@@ -33,15 +33,9 @@ jobs:
         run: python tools/smoke_install.py
       - name: Test multi-agent installer
         run: python tools/test_installer.py
-      - name: Run snapshot and save regressions
+      - name: Run validator and safe-save regressions
         run: python -B tools/test_regressions.py
-      - name: Test process capture and Jev transport without network
-        run: python -B tools/test_jev_client.py
-      - name: Test conservative process review
-        run: python -B tools/test_process_handoff.py
-      - name: Test raw capture and front-loaded routing
-        run: python -B -m unittest discover -s tools -p "test_*handoff.py" -v
-      - name: Compile validator
-        run: python -m py_compile skills/project-handoff/scripts/validate_handoff.py
+      - name: Compile scripts
+        run: python -m py_compile skills/project-handoff/scripts/validate_handoff.py skills/project-handoff/scripts/manage_handoff.py
       - name: Run validator self-tests
         run: python skills/project-handoff/scripts/validate_handoff.py --self-test

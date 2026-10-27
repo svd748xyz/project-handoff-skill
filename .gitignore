@@ -8,6 +8,5 @@ Thumbs.db
 .env.*
 .mcp.json
 .codex/
-.project-handoff/
 /项目开发交接.md
 /项目开发交接.md.candidate
