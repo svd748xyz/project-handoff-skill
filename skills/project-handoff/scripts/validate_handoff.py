@@ -43,9 +43,7 @@ META_BLOCK_RE = re.compile(
 )
 SECTION_RE = re.compile(r"<!--\s*section:\s*([a-z0-9-]+)\s*-->")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-STATUS_TOKEN_RE = re.compile(
-    r"\[(?:拟定|进行中|已实现|未验证|已验证|用户验收|已部署-已回读|受阻|待确认)\]"
-)
+STATUS_TOKEN_RE = re.compile(r"\[[\u4e00-\u9fff]{2,10}\](?!\()")
 ALLOWED_STATUS_TOKENS = {"[已验证]", "[待确认]"}
 VERIFIED_TOKEN = "[已验证]"
 EVIDENCE_HINT_RE = re.compile(
@@ -467,6 +465,10 @@ def run_self_test() -> int:
         (
             "legacy label rejected",
             not validate_text(valid.replace("[待确认]", "[进行中]")).ok,
+        ),
+        (
+            "invented label rejected",
+            not validate_text(valid.replace("[待确认]", "[已决定]")).ok,
         ),
         (
             "verified without evidence rejected",

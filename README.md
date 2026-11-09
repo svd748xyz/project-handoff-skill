@@ -1,4 +1,4 @@
-# Project Handoff Skill 3.1.0
+# Project Handoff Skill 3.1.1
 
 `project-handoff` distills the session that just happened into a short `项目开发交接.md`, so a fresh coding-agent session can continue without reading the previous conversation.
 
@@ -9,6 +9,11 @@ The handoff carries the goal and progress, the user's standing instructions, wha
 A long session that has been compacted several times dilutes the model's attention and silently loses early details. Starting a fresh session fixes the dilution, but the new session starts with nothing. This skill produces a small, portable session record that the next session can read in one pass, and tells that session how to check it against the workspace before acting.
 
 It is not a project wiki, a long-term architecture register, or a replacement for Git, tests, issues, or source documents. It records the working state and the next action.
+
+## What changed in 3.1.1
+
+- The validator now rejects every unsupported bracketed label (`[已提交]`, `[已决定]`, `[注意]`, …), not just a fixed list of old ones; Markdown links like `[文档](x.md)`, checkboxes, and ASCII brackets are unaffected.
+- `SKILL.md` writing rules tightened: each fact is written once in the section that owns it; `未决问题` holds only unresolved items; stale carry-over is dropped silently; inherited items must carry `（承接上次）`; `session-scope` describes the work, not the handoff; and `第一个动作` names the user-decision question when progress is blocked instead of re-checking the repo.
 
 ## What changed in 3.1
 
@@ -26,7 +31,7 @@ The repository is public and can be installed independently on any device. It ne
 
 - [Latest source](https://github.com/svd748xyz/project-handoff-skill): follows `main`.
 - [Releases](https://github.com/svd748xyz/project-handoff-skill/releases): pick a fixed version.
-- [3.1.0 notes](CHANGELOG.md): what changed in this release.
+- [3.1.1 notes](CHANGELOG.md): what changed in this release.
 
 Download and extract the release, then from the directory containing `tools/` and `skills/`:
 
@@ -240,7 +245,7 @@ Validate an existing handoff directly:
 python -B skills/project-handoff/scripts/validate_handoff.py 项目开发交接.md
 ```
 
-The validator checks the metadata block, section order and headings, the first action and acceptance condition in `下一步`, label rules, obvious secrets, placeholders, and size. It warns above 8,000 characters and rejects above 16,000; the target is 3,000–6,000. Its evidence check only rejects `[已验证]` items that name no command, file, result, or date; it cannot tell whether the evidence is real.
+The validator checks the metadata block, section order and headings, the first action and acceptance condition in `下一步`, status labels (any other bracketed label such as `[已决定]` is rejected), obvious secrets, placeholders, and size. It warns above 8,000 characters and rejects above 16,000; the target is 3,000–6,000. Its evidence check only rejects `[已验证]` items that name no command, file, result, or date; it cannot tell whether the evidence is real.
 
 ## Verification boundary
 

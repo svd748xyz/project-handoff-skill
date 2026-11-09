@@ -132,6 +132,38 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(any("long" in warning for warning in report.warnings))
 
 
+class LabelTests(unittest.TestCase):
+    def assertLabelError(self, text: str, token: str) -> None:
+        errors = validator.validate_text(text).errors
+        self.assertTrue(
+            any(
+                "unsupported status label" in error and token in error
+                for error in errors
+            ),
+            errors,
+        )
+
+    def test_unsupported_cjk_labels_rejected(self):
+        for token in ("[已提交]", "[已决定]", "[注意]"):
+            with self.subTest(token=token):
+                self.assertLabelError(
+                    sample_document().replace("[待确认]", token), token
+                )
+
+    def test_lone_halves_of_combined_label_rejected(self):
+        for token in ("[未验证]", "[已实现]"):
+            with self.subTest(token=token):
+                self.assertLabelError(
+                    sample_document().replace("[待确认]", token), token
+                )
+
+    def test_non_label_brackets_accepted(self):
+        for snippet in ("[文档](x.md)", "[ ]", "[x]", "[1]", "[ERROR]"):
+            with self.subTest(snippet=snippet):
+                text = sample_document() + f"\n- 参考 {snippet}\n"
+                self.assertEqual([], validator.validate_text(text).errors)
+
+
 class SecretTests(unittest.TestCase):
     def errors_for(self, line: str) -> list[str]:
         text = sample_document().replace(CONSTRAINT_TEXT, line + "；")
@@ -191,6 +223,14 @@ class TemplateTests(unittest.TestCase):
         self.assertGreaterEqual(len(placeholders), 11)
         for placeholder in placeholders:
             self.assertIn(placeholder, placeholder_errors)
+
+    def test_first_action_template_covers_user_decision_case(self):
+        line = next(
+            line
+            for line in skill_template().splitlines()
+            if line.startswith("- 第一个动作")
+        )
+        self.assertIn("user decision", line)
 
     def test_whole_line_placeholder_rejected(self):
         text = sample_document().replace(

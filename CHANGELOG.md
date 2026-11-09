@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.1 — 2026-11-09
+
+- **Fix:** the status-label check only matched a fixed list of old labels, so a real handoff using `[已提交]`, `[已决定]`, or `[注意]` passed validation. Any bracketed CJK label other than `[已验证]`, `[已实现][未验证]`, and `[待确认]` is now rejected; Markdown links such as `[文档](x.md)`, checkboxes, and ASCII brackets are unaffected. Handoff format stays **5**.
+- **SKILL.md rules:** each fact is written once in the section that owns it (commit hashes and "not committed" notes belong in `做了什么`); `未决问题` holds only unresolved items — decided ones go to `关键决策与理由`; stale carry-over is dropped silently instead of annotated; inherited items must be marked `（承接上次）`; `session-scope` describes the work, not the handoff.
+- **`第一个动作`:** when progress is blocked on a user decision, the first action is the specific question to ask, with its options; re-checking the repo is Resume's job, not a first action.
+
+Validation before publication: 46 regression tests, the isolated installation smoke test, installer tests, release checks, and 14 validator self-test scenarios, run locally on Windows.
+
 ## 3.1.0 — 2026-11-09
 
 This release targets the case the skill exists for: a session that has been compacted several times and needs to hand over to a fresh one without losing what compaction has already blurred.
