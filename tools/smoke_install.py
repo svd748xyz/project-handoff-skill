@@ -73,10 +73,17 @@ def main() -> int:
             ],
             temporary,
         )
-        if result.returncode != 0 or "format-version: 4" not in result.stdout:
+        if result.returncode != 0 or "format-version: 5" not in result.stdout:
             print(result.stdout, end="")
             print(result.stderr, end="", file=sys.stderr)
-            print("ERROR: prepare did not produce format-4 metadata")
+            print("ERROR: prepare did not produce format-5 metadata")
+            return 1
+
+        result = _run([sys.executable, "-B", str(helper), "inspect", "--root", temporary], temporary)
+        if result.returncode != 0 or "previous-handoff: none" not in result.stdout:
+            print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            print("ERROR: inspect did not run in the isolated installation")
             return 1
 
     print("PASS: isolated skill installation")

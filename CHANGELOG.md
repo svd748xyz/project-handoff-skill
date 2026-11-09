@@ -1,5 +1,26 @@
 # Changelog
 
+## 3.1.0 — 2026-11-09
+
+This release targets the case the skill exists for: a session that has been compacted several times and needs to hand over to a fresh one without losing what compaction has already blurred.
+
+- **Compaction-aware gathering:** compaction summaries are a named source for early decisions, user corrections, and dead ends. Facts found only there are marked `（据压缩摘要）` and become `[待确认]` when the next action depends on them.
+- **Carry-over fixed:** items still in force (standing user instructions, unreversed decisions, live pitfalls) are carried into the next handoff, not only open items. Previously a decision was dropped as soon as it was no longer open, so it vanished after one or two handoffs.
+- **Template, format 5:** eight sections. `本次会话目标` becomes `目标与进度`; new `用户偏好与约束`; `下一步第一个动作` becomes `下一步`, with `第一个动作` + `验收`, `先读`, and optional `后续步骤`. Empty sections hold `- 无`.
+- **New `inspect` command:** prints the previous handoff's metadata, commits and tracked changes since its `source-revision`, uncommitted files, a missing or rewritten baseline, and a leftover candidate. It grounds "what changed" (including committed work) and gives Resume its drift check.
+- **New modes:** Checkpoint (write mid-session, before more compaction) and a full Resume procedure: inspect, read, re-check what the first action depends on, restate, act, and keep following the recorded constraints.
+- **Simpler save:** the default flow is a single `save`; `--preview` is only for Preview mode. Successful saves print validator warnings.
+- **Fix:** `working-tree-state` was always `dirty` once an untracked handoff existed; the handoff and its candidate are now excluded from Git status. Git output keeps non-ASCII paths readable.
+- **Fix:** secret detection missed prefixed environment variables such as `OPENAI_API_KEY=...` and `GITHUB_TOKEN=...`; it now also detects `sk-`, `ghp_`, `github_pat_`, `xox?-`, and `AIza` tokens, and accepts references such as `$VAR`, `%VAR%`, and `<redacted>`.
+- **Fix:** template placeholders that begin with a keyword (for example `<the single first action>`) or are not in the keyword list went undetected; a whole-line placeholder rule now backs up the keyword list, and a test checks every placeholder in the `SKILL.md` template.
+- **Fix:** the first save failed on file systems without hard links; it now falls back to exclusive creation.
+- Scripts switch their output to UTF-8 themselves; `-X utf8` is no longer required.
+- Size budget: target 3,000–6,000 characters; warn above 8,000, reject above 16,000.
+- The description now names trigger phrases (`写交接`, `开新会话`, `上下文快满了`, `handoff`, …) and the resume case.
+- Format-4 handoffs are still read by `inspect` and carried over by the next write.
+
+Validation before publication: 42 regression tests, the isolated installation smoke test (now including `inspect`), installer tests, release checks, and 13 validator self-test scenarios, run locally on Windows. No forward test with a fresh session has been run for this release yet.
+
 ## 3.0.0 — 2026-10-27
 
 This release recenters the skill on its intended purpose: distilling one session into a handoff that a fresh conversation can pick up quickly. It is a breaking rewrite, not an extension of the 2.x project-state workflow.

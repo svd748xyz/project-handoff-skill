@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-FORMAT_VERSION = "4"
+FORMAT_VERSION = "5"
 TARGET_NAME = "项目开发交接.md"
 REQUIRED_METADATA = (
     "format-version",
@@ -24,14 +24,16 @@ REQUIRED_METADATA = (
 ALLOWED_TREE_STATES = {"clean", "dirty", "not-a-git-repository"}
 NO_GIT = "not-a-git-repository"
 SECTIONS = (
-    ("goal", "本次会话目标"),
+    ("goal", "目标与进度"),
+    ("constraints", "用户偏好与约束"),
     ("work", "做了什么"),
     ("decisions", "关键决策与理由"),
     ("verification", "验证情况"),
     ("pitfalls", "踩坑与失败路径"),
     ("open", "未决问题"),
-    ("next", "下一步第一个动作"),
+    ("next", "下一步"),
 )
+NEXT_REQUIRED_PHRASES = ("第一个动作", "验收")
 SECTION_IDS = tuple(section for section, _ in SECTIONS)
 SECTION_TITLES = dict(SECTIONS)
 
@@ -53,11 +55,20 @@ EVIDENCE_HINT_RE = re.compile(
     r"|\d+\s*(?:passed|failed|通过|失败|tests?|项)"
 )
 SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?im)\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|"
-    r"cookie|client[_-]?secret|secret)\b\s*[:=]\s*([^\s`]+)"
+    r"(?im)(?<![a-z0-9])(api[_-]?key|access[_-]?token|auth[_-]?token|token|"
+    r"password|passwd|cookie|client[_-]?secret|secret|private[_-]?key)\b"
+    r"\s*[:=：]\s*([^\s`]+)"
 )
 BEARER_RE = re.compile(r"(?im)\bauthorization\s*:\s*bearer\s+([^\s`]+)")
 AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
+TOKEN_RE = re.compile(
+    r"\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}"
+    r"|gh[pousr]_[A-Za-z0-9]{30,}"
+    r"|github_pat_[A-Za-z0-9_]{30,}"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|AIza[0-9A-Za-z_-]{35})"
+)
+SECRET_REFERENCE_PREFIXES = ("$", "%", "<", "{", "*")
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
 EMAIL_RE = re.compile(
     r"(?<![\w.+-])[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}(?![\w.-])",
@@ -77,13 +88,17 @@ RAW_CONTEXT_RE = re.compile(
     r"^\s*(?:user|assistant|tool)\s*[:：])"
 )
 PLACEHOLDER_RE = re.compile(
-    r"<[^>\n]{1,160}(?:the goal|the single|changes made|files or areas|"
-    r"decisions that|what was run|unresolved|failed attempts|one line|"
-    r"observable|acceptance condition|actual result|填写|待填|替换)[^>\n]*>",
+    r"<[^>\n]{0,160}(?:the goal|the overall goal|the single|changes made|"
+    r"files or areas|decisions? that|what was run|unresolved|failed attempts|"
+    r"one line|observable|acceptance condition|actual result|smallest check|"
+    r"standing instructions|remaining steps|files to read|填写|待填|替换)[^>\n]*>",
     re.IGNORECASE,
 )
-LENGTH_WARNING = 10_000
-LENGTH_LIMIT = 20_000
+PLACEHOLDER_LINE_RE = re.compile(
+    r"(?m)^\s*(?:[-*+]\s+)?(<(?![!/])[^<>\n]*\s[^<>\n]*\s[^<>\n]*>)\s*$"
+)
+LENGTH_WARNING = 8_000
+LENGTH_LIMIT = 16_000
 
 
 @dataclass
@@ -224,6 +239,12 @@ def _validate_sections(text: str, report: Report) -> None:
         body = re.sub(r"(?m)^##\s+.*$", "", body, count=1).strip()
         if not body:
             report.errors.append(f"section {section!r} is empty")
+        elif section == "next":
+            for phrase in NEXT_REQUIRED_PHRASES:
+                if phrase not in body:
+                    report.errors.append(
+                        f"section 'next' must name the {phrase!r} item"
+                    )
 
 
 def _validate_labels(text: str, report: Report) -> None:
@@ -245,6 +266,15 @@ def _validate_labels(text: str, report: Report) -> None:
             )
 
 
+def _looks_like_secret(raw: str) -> bool:
+    value = raw.strip("'\".,;，。；")
+    if value.casefold() in SAFE_SECRET_VALUES or value.startswith(
+        SECRET_REFERENCE_PREFIXES
+    ):
+        return False
+    return len(value) >= 6 and bool(re.search(r"[A-Za-z0-9]", value))
+
+
 def _validate_content(text: str, report: Report) -> None:
     visible = HTML_COMMENT_RE.sub("", text)
 
@@ -252,17 +282,17 @@ def _validate_content(text: str, report: Report) -> None:
         report.errors.append("possible AWS access key found")
     if PRIVATE_KEY_RE.search(text):
         report.errors.append("private-key material found")
+    if TOKEN_RE.search(text):
+        report.errors.append("possible API token found")
 
     for match in SECRET_ASSIGNMENT_RE.finditer(text):
-        value = match.group(2).strip("'\".,;").casefold()
-        if value not in SAFE_SECRET_VALUES:
+        if _looks_like_secret(match.group(2)):
             report.errors.append(
                 f"possible secret assignment found for {match.group(1)!r}"
             )
 
     for match in BEARER_RE.finditer(text):
-        value = match.group(1).strip("'\".,;").casefold()
-        if value not in SAFE_SECRET_VALUES:
+        if _looks_like_secret(match.group(1)):
             report.errors.append("possible bearer token found")
 
     if EMAIL_RE.search(visible):
@@ -274,7 +304,9 @@ def _validate_content(text: str, report: Report) -> None:
             "handoff appears to contain raw conversation or chain-of-thought content"
         )
 
-    placeholders = sorted(set(PLACEHOLDER_RE.findall(visible)))
+    placeholders = sorted(
+        set(PLACEHOLDER_RE.findall(visible)) | set(PLACEHOLDER_LINE_RE.findall(visible))
+    )
     if placeholders:
         report.errors.append(
             "unresolved template placeholders: " + ", ".join(placeholders)
@@ -368,23 +400,27 @@ def _swap_sections(text: str, first: str, second: str) -> str:
 
 def _sample_document() -> str:
     return """<!-- project-handoff-meta
-format-version: 4
-updated-at: 2026-10-27T10:00:00+08:00
+format-version: 5
+updated-at: 2026-11-09T10:00:00+08:00
 session-scope: Recenter the handoff skill on single-session distillation.
 source-revision: not-a-git-repository
 working-tree-state: not-a-git-repository
 -->
 # 项目开发交接
 
-> 新会话先读本文件，从“下一步第一个动作”继续；未验证项不要当作已完成。
+> 新会话先读本文件，核对仓库状态，再从“下一步”的第一个动作继续；未验证项不要当作已完成。
 
 <!-- section: goal -->
-## 本次会话目标
-- 把技能从项目状态档案改成会话提炼。
+## 目标与进度
+- 把技能从项目状态档案改成会话提炼；进度：模板与校验器已改完，文档待同步。
+
+<!-- section: constraints -->
+## 用户偏好与约束
+- 回复用中文；未经确认不要提交或推送（承接上次）。
 
 <!-- section: work -->
 ## 做了什么
-- 重写 `SKILL.md` 为七节会话模板。
+- 重写 `SKILL.md` 为八节会话模板。
 
 <!-- section: decisions -->
 ## 关键决策与理由
@@ -392,7 +428,7 @@ working-tree-state: not-a-git-repository
 
 <!-- section: verification -->
 ## 验证情况
-- [已验证] `python -m pytest tools -q` 在 2026-10-27 通过，18 passed。
+- [已验证] `python -m pytest tools -q` 在 2026-11-09 通过，18 passed。
 - [已实现][未验证] 新的安装器尚未在 Claude Code 中实测。
 
 <!-- section: pitfalls -->
@@ -404,8 +440,10 @@ working-tree-state: not-a-git-repository
 - [待确认] 是否保留旧格式文档的读取兼容；影响：决定是否增加迁移提示。
 
 <!-- section: next -->
-## 下一步第一个动作
-- 在隔离会话中做一次消费测试；验收条件：新会话能复述目标并执行第一个动作。
+## 下一步
+- 第一个动作：在隔离会话中做一次消费测试；验收：新会话能复述目标并执行该动作。
+- 先读：`SKILL.md`（模板与规则的唯一来源）。
+- 后续步骤：同步 README；更新 CHANGELOG。
 """
 
 
@@ -414,8 +452,8 @@ def run_self_test() -> int:
     scenarios = [
         ("valid document", validate_text(valid).exit_code() == 0),
         (
-            "format 3 rejected",
-            not validate_text(valid.replace("format-version: 4", "format-version: 3")).ok,
+            "format 4 rejected",
+            not validate_text(valid.replace("format-version: 5", "format-version: 4")).ok,
         ),
         (
             "missing scope rejected",
@@ -434,7 +472,7 @@ def run_self_test() -> int:
             "verified without evidence rejected",
             not validate_text(
                 valid.replace(
-                    "`python -m pytest tools -q` 在 2026-10-27 通过，18 passed。",
+                    "`python -m pytest tools -q` 在 2026-11-09 通过，18 passed。",
                     "测试通过。",
                 )
             ).ok,
@@ -442,8 +480,27 @@ def run_self_test() -> int:
         (
             "secret rejected",
             not validate_text(
-                valid.replace("把技能从项目状态档案改成会话提炼。", "password: hunter2")
+                valid.replace("回复用中文；", "password: hunter2；")
             ).ok,
+        ),
+        (
+            "prefixed env-var key rejected",
+            not validate_text(
+                valid.replace("回复用中文；", "OPENAI_API_KEY=abc123def456ghi789；")
+            ).ok,
+        ),
+        (
+            "whole-line placeholder rejected",
+            not validate_text(
+                valid.replace(
+                    "- 重写 `SKILL.md` 为八节会话模板。",
+                    "<each item and what it changes>",
+                )
+            ).ok,
+        ),
+        (
+            "next without first action rejected",
+            not validate_text(valid.replace("第一个动作：", "")).ok,
         ),
         (
             "oversized rejected",
@@ -466,7 +523,15 @@ def _print_report(path: Path, report: Report, *, strict: bool = False) -> int:
     return code
 
 
+def use_utf8_output() -> None:
+    """Emit UTF-8 regardless of the console code page, so -X utf8 is optional."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    use_utf8_output()
     parser = argparse.ArgumentParser(
         description="Validate a session handoff Markdown document."
     )

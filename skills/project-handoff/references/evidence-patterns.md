@@ -21,10 +21,16 @@ Do not add other status labels. Do not use a percentage or confidence score in p
 
 An evidence item names what was checked and what came back. For example:
 
-- `[已验证]` `python -m pytest tests/test_parser.py -q` → 42 passed; 2026-10-27.
+- `[已验证]` `python -m pytest tests/test_parser.py -q` → 42 passed; 2026-11-09.
 - `[已验证]` Read `src/parser.py` lines 40-88; empty input is rejected by the `if not raw` branch.
 - `[已实现][未验证]` Added the retry branch in `src/client.py`; no test run yet.
 - `[待确认]` Whether the staging deployment picked up this build; check the deployed revision read-back.
+
+The validator only rejects `[已验证]` items that name no command, file, result, or date. It cannot tell whether the named evidence was really produced, so `[已验证]` `parser.py` 没问题 passes the validator and is still a weak claim. Name what came back.
+
+## Facts from compaction summaries
+
+A compaction summary is a lossy record written by the previous model. Use it, because it is often the only record of early decisions, but do not treat it as observation. If a fact exists only in a summary and the workspace cannot confirm it, note `（据压缩摘要）`; if the next action depends on it, label it `[待确认]` and name the check that would confirm it.
 
 ## Keep failures
 
@@ -40,4 +46,4 @@ For each `[待确认]` that changes the next action, name the missing evidence o
 
 ## Size
 
-A handoff is a reading aid, not a transcript. Keep the whole file under about 10,000 characters; the validator warns above that and rejects above 20,000.
+A handoff is a reading aid, not a transcript. Aim for 3,000–6,000 characters; the validator warns above 8,000 and rejects above 16,000.
