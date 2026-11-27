@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -84,6 +85,83 @@ def main() -> int:
             print(result.stdout, end="")
             print(result.stderr, end="", file=sys.stderr)
             print("ERROR: inspect did not run in the isolated installation")
+            return 1
+
+        transcript = Path(temporary) / "session.jsonl"
+        transcript.write_text(
+            json.dumps({"type": "USER_INPUT", "content": "<USER_REQUEST>Reply in Chinese</USER_REQUEST>"})
+            + "\n",
+            encoding="utf-8",
+        )
+        result = _run(
+            [sys.executable, "-B", str(helper), "recall", "--transcript", str(transcript)],
+            temporary,
+        )
+        if result.returncode != 0 or "[1] Reply in Chinese" not in result.stdout:
+            print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            print("ERROR: recall did not extract user turn in the isolated installation")
+            return 1
+
+        body_only = Path(temporary) / "项目开发交接.md.candidate"
+        body_only.write_text(
+            """# 项目开发交接
+
+> 新会话先读本文件，核对仓库状态，再从“下一步”的第一个动作继续；未验证项不要当作已完成。
+
+<!-- section: goal -->
+## 目标与进度
+- 烟雾测试。
+
+<!-- section: constraints -->
+## 用户偏好与约束
+- 无
+
+<!-- section: work -->
+## 做了什么
+- 无
+
+<!-- section: decisions -->
+## 关键决策与理由
+- 无
+
+<!-- section: verification -->
+## 验证情况
+- 无
+
+<!-- section: pitfalls -->
+## 踩坑与失败路径
+- 无
+
+<!-- section: open -->
+## 未决问题
+- 无
+
+<!-- section: next -->
+## 下一步
+- 第一个动作：运行测试；验收：全部通过。
+- 先读：无
+""",
+            encoding="utf-8",
+        )
+        result = _run(
+            [
+                sys.executable,
+                "-B",
+                str(helper),
+                "save",
+                "--root",
+                temporary,
+                "--session-scope",
+                "isolated save smoke test",
+                "--preview",
+            ],
+            temporary,
+        )
+        if result.returncode != 0 or "PASS:" not in result.stdout:
+            print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            print("ERROR: save --session-scope --preview failed in isolated installation")
             return 1
 
     print("PASS: isolated skill installation")

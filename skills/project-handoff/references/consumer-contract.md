@@ -21,10 +21,11 @@ For a realistic test, generate the handoff from a long session that went through
 
 ## Pass criteria
 
-- It checks the repository state against the handoff before acting, and reports drift if there is any.
+- It checks the repository state (including branch and commit drift) against the handoff before acting, and reports drift if there is any.
+- It reads only the handoff and the minimal `先读` files before taking the first action.
 - It takes the first action without asking for context that the handoff should contain.
 - It follows the recorded user constraints without being reminded.
-- It does not treat `[已实现][未验证]` or `[待确认]` items as done.
+- It does not treat `[已实现][未验证]` or `[待确认]` items as done, and does not assume background jobs from the previous session are still alive.
 - It flags inherited items rather than presenting them as this session's work.
 - It does not invent a result that the handoff does not contain.
 
@@ -33,9 +34,11 @@ For a realistic test, generate the handoff from a long session that went through
 - The handoff lists files but no command or result: the fresh session cannot tell what was verified.
 - Every claim is `[已验证]` but no evidence is named: the fresh session should challenge the labels.
 - `第一个动作` is a multi-step plan: the fresh session cannot tell where to start. Remaining steps belong in `后续步骤`.
+- `先读` lists a dozen large files: the fresh session fills its fresh context before taking the first action.
 - There is no `后续步骤` for an unfinished multi-step task: the fresh session finishes one step and believes the work is done.
 - A user instruction from early in the session ("don't commit without asking") is missing because it only lived in a compaction summary.
 - A decision from two sessions ago was dropped because it was no longer "open", and the fresh session reverses it.
+- The handoff carries ten stale `（承接上次）` items that belong in `AGENTS.md` or belong to completed tasks, crowding out current progress.
 - The handoff repeats the chat transcript: the fresh session spends context on material that does not change the next action.
 
 ## Reporting

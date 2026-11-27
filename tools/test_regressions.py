@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import re
 import shutil
 import subprocess
@@ -24,7 +25,7 @@ import manage_handoff  # noqa: E402
 import validate_handoff as validator  # noqa: E402
 
 SAMPLE_SCOPE = "Recenter the handoff skill on single-session distillation."
-VERIFIED_EVIDENCE = "`python -m pytest tools -q` 在 2026-11-09 通过，18 passed。"
+VERIFIED_EVIDENCE = "`python -m pytest tools -q` 在 2026-11-27 通过，18 passed。"
 CONSTRAINT_TEXT = "回复用中文；"
 
 
@@ -33,8 +34,10 @@ def sample_document(
     revision: str = "not-a-git-repository",
     state: str = "not-a-git-repository",
     scope: str = SAMPLE_SCOPE,
+    branch: str | None = None,
+    scope_path: str | None = None,
 ) -> str:
-    return (
+    doc = (
         validator._sample_document()
         .replace(f"session-scope: {SAMPLE_SCOPE}", f"session-scope: {scope}")
         .replace("source-revision: not-a-git-repository", f"source-revision: {revision}")
@@ -42,6 +45,18 @@ def sample_document(
             "working-tree-state: not-a-git-repository", f"working-tree-state: {state}"
         )
     )
+    extra_lines: list[str] = []
+    if branch is not None:
+        extra_lines.append(f"branch: {branch}")
+    if scope_path is not None:
+        extra_lines.append(f"scope-path: {scope_path}")
+    if extra_lines:
+        doc = doc.replace("\n-->", "\n" + "\n".join(extra_lines) + "\n-->", 1)
+    return doc
+
+
+def sample_body_only() -> str:
+    return validator.META_BLOCK_RE.sub("", sample_document(), count=1).lstrip("\r\n")
 
 
 def skill_template() -> str:
@@ -65,11 +80,33 @@ class ValidatorTests(unittest.TestCase):
         errors = validator.validate_text(text).errors
         self.assertTrue(any(fragment in error for error in errors), errors)
 
+    def assertWarning(self, text: str, fragment: str) -> None:
+        report = validator.validate_text(text)
+        self.assertEqual([], report.errors)
+        self.assertTrue(any(fragment in warning for warning in report.warnings), report.warnings)
+
     def test_valid_document_passes(self):
         report = validator.validate_text(sample_document())
         self.assertEqual([], report.errors)
         self.assertEqual([], report.warnings)
         self.assertEqual(0, report.exit_code())
+
+    def test_optional_git_metadata_accepted_without_warnings(self):
+        doc = sample_document(
+            revision="a" * 40,
+            state="clean",
+            branch="main",
+            scope_path="packages/app",
+        )
+        report = validator.validate_text(doc)
+        self.assertEqual([], report.errors)
+        self.assertEqual([], report.warnings)
+
+    def test_optional_git_metadata_rejected_for_non_git(self):
+        doc = sample_document(branch="main")
+        self.assertError(doc, "non-git handoff must not record a git branch")
+        doc2 = sample_document(scope_path="sub")
+        self.assertError(doc2, "scope-path is only valid for git handoffs")
 
     def test_missing_section_fails(self):
         head, blocks = validator._split_sections(sample_document())
@@ -105,7 +142,7 @@ class ValidatorTests(unittest.TestCase):
         )
 
     def test_updated_at_requires_timezone(self):
-        text = sample_document().replace("2026-11-09T10:00:00+08:00", "2026-11-09T10:00:00")
+        text = sample_document().replace("2026-11-27T10:00:00+08:00", "2026-11-27T10:00:00")
         self.assertError(text, "timezone")
 
     def test_verified_claim_requires_evidence(self):
@@ -119,6 +156,58 @@ class ValidatorTests(unittest.TestCase):
     def test_next_requires_first_action_and_acceptance(self):
         self.assertError(sample_document().replace("第一个动作：", ""), "第一个动作")
         self.assertError(sample_document().replace("验收：", "然后"), "验收")
+
+    def test_missing_or_oversized_preread_warns(self):
+        no_preread = sample_document().replace(
+            "- 先读：`SKILL.md`（模板与规则的唯一来源）。\n", ""
+        )
+        self.assertWarning(no_preread, "先读")
+
+        too_many = sample_document().replace(
+            "`SKILL.md`（模板与规则的唯一来源）",
+            "`a.py`、`b.py`、`c.py`、`d.py`、`e.py`、`f.py`",
+        )
+        self.assertWarning(too_many, "lists 6 files")
+
+        none_preread = sample_document().replace(
+            "- 先读：`SKILL.md`（模板与规则的唯一来源）。", "- 先读：无"
+        )
+        self.assertEqual([], validator.validate_text(none_preread).warnings)
+
+    def test_work_verified_without_verification_section_warns(self):
+        doc = (
+            sample_document()
+            .replace(
+                "- 重写 `SKILL.md` 为八节会话模板。",
+                "- [已验证] 重写 `SKILL.md` 为八节会话模板。",
+            )
+            .replace(
+                f"- [已验证] {VERIFIED_EVIDENCE}\n- [已实现][未验证] 新的安装器尚未在 Claude Code 中实测。",
+                "- 无",
+            )
+        )
+        self.assertWarning(doc, "'verification' records no [已验证]")
+
+    def test_ephemeral_session_state_warns_unless_marked_pending(self):
+        running = sample_document().replace(
+            "重写 `SKILL.md` 为八节会话模板。",
+            "评测脚本后台运行中，PID: 4321。",
+        )
+        self.assertWarning(running, "ephemeral session-bound state")
+
+        properly_marked = sample_document().replace(
+            "重写 `SKILL.md` 为八节会话模板。",
+            "[待确认] 评测脚本上次在后台运行中（未落盘，需重查 mtime 与日志末行）。",
+        )
+        self.assertEqual([], validator.validate_text(properly_marked).warnings)
+
+    def test_carry_over_bloat_warns(self):
+        extra = "\n".join(f"- 长期约束 {i}（承接上次）。" for i in range(1, 11))
+        doc = sample_document().replace(
+            "- 回复用中文；未经确认不要提交或推送（承接上次）。",
+            extra,
+        )
+        self.assertWarning(doc, "carried-over items")
 
     def test_wrong_heading_fails(self):
         self.assertError(sample_document().replace("## 验证情况", "## 别的标题"), "must start with")
@@ -163,6 +252,16 @@ class LabelTests(unittest.TestCase):
                 text = sample_document() + f"\n- 参考 {snippet}\n"
                 self.assertEqual([], validator.validate_text(text).errors)
 
+    def test_cjk_brackets_inside_code_spans_and_fences_accepted(self):
+        inline = sample_document().replace(
+            "重写 `SKILL.md` 为八节会话模板。",
+            "修复日志 `[警告] timeout`、提交前缀 `[重构] parser`，并说明不要滥用 `[已验证]`。",
+        )
+        self.assertEqual([], validator.validate_text(inline).errors)
+
+        fenced = sample_document() + "\n```text\n[警告] connection reset\n[已提交] sample log\n```\n"
+        self.assertEqual([], validator.validate_text(fenced).errors)
+
 
 class SecretTests(unittest.TestCase):
     def errors_for(self, line: str) -> list[str]:
@@ -199,6 +298,19 @@ class SecretTests(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertEqual([], self.errors_for(line))
+
+    def test_redact_secrets_masks_credentials_and_preserves_references(self):
+        raw = (
+            "Use OPENAI_API_KEY=secretvalue12345 and sk-proj-"
+            + "a" * 28
+            + " and Authorization: Bearer tok12345678 but keep $HOME and max_tokens=4096"
+        )
+        redacted = validator.redact_secrets(raw)
+        self.assertNotIn("secretvalue12345", redacted)
+        self.assertNotIn("sk-proj-", redacted)
+        self.assertNotIn("tok12345678", redacted)
+        self.assertIn("$HOME", redacted)
+        self.assertIn("max_tokens=4096", redacted)
 
 
 class TemplateTests(unittest.TestCase):
@@ -285,12 +397,69 @@ class SaveTests(HelperTestCase):
         self.assertEqual(sample_document(), self.target.read_text(encoding="utf-8"))
         self.assertFalse(self.candidate.exists())
 
+    def test_save_with_session_scope_injects_metadata_into_body_only_candidate(self):
+        self.candidate.write_text(sample_body_only(), encoding="utf-8")
+        code, output = self._run(
+            "save",
+            "--root",
+            str(self.root),
+            "--session-scope",
+            "fast two-step sync",
+        )
+        self.assertEqual(0, code, output)
+        self.assertIn("SAVED", output)
+        saved = self.target.read_text(encoding="utf-8")
+        self.assertIn("format-version: 5", saved)
+        self.assertIn("session-scope: fast two-step sync", saved)
+        self.assertFalse(self.candidate.exists())
+        leftovers = list(self.root.glob(".*.tmp.*"))
+        self.assertEqual([], leftovers)
+
+    def test_save_with_session_scope_replaces_stale_metadata_block(self):
+        self.candidate.write_text(sample_document(scope="stale scope"), encoding="utf-8")
+        code, output = self._run(
+            "save",
+            "--root",
+            str(self.root),
+            "--session-scope",
+            "fresh scope",
+        )
+        self.assertEqual(0, code, output)
+        saved = self.target.read_text(encoding="utf-8")
+        self.assertIn("session-scope: fresh scope", saved)
+        self.assertNotIn("stale scope", saved)
+
+    def test_save_with_session_scope_preview_writes_nothing(self):
+        self.candidate.write_text(sample_body_only(), encoding="utf-8")
+        code, output = self._run(
+            "save",
+            "--root",
+            str(self.root),
+            "--session-scope",
+            "preview scope",
+            "--preview",
+        )
+        self.assertEqual(0, code, output)
+        self.assertIn("PASS", output)
+        self.assertFalse(self.target.exists())
+        self.assertTrue(self.candidate.exists())
+
     def test_save_without_hard_links_falls_back(self):
         self.candidate.write_text(sample_document(), encoding="utf-8")
         with mock.patch.object(manage_handoff.os, "link", side_effect=OSError("no links")):
             code, output = self._run("save", "--root", str(self.root))
         self.assertEqual(0, code, output)
         self.assertEqual(sample_document(), self.target.read_text(encoding="utf-8"))
+        self.assertFalse(self.candidate.exists())
+
+    def test_save_with_session_scope_without_hard_links_falls_back(self):
+        self.candidate.write_text(sample_body_only(), encoding="utf-8")
+        with mock.patch.object(manage_handoff.os, "link", side_effect=OSError("no links")):
+            code, output = self._run(
+                "save", "--root", str(self.root), "--session-scope", "no hard link scope"
+            )
+        self.assertEqual(0, code, output)
+        self.assertIn("session-scope: no hard link scope", self.target.read_text(encoding="utf-8"))
         self.assertFalse(self.candidate.exists())
 
     def test_save_reports_warnings_on_success(self):
@@ -383,6 +552,88 @@ class InspectTests(HelperTestCase):
         self.assertIn("previous-session-scope: old session", output)
 
 
+class RecallTests(HelperTestCase):
+    def _write_jsonl(self, lines: list[object]) -> Path:
+        path = self.root / "transcript.jsonl"
+        rendered = [
+            item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+            for item in lines
+        ]
+        path.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+        return path
+
+    def test_recall_extracts_user_turns_across_agent_schemas(self):
+        path = self._write_jsonl(
+            [
+                {
+                    "type": "USER_INPUT",
+                    "content": "<USER_REQUEST>Always reply in Chinese and do not auto-commit.</USER_REQUEST>",
+                },
+                {"type": "SYSTEM_MESSAGE", "content": "injected hook"},
+                {"type": "PLANNER_RESPONSE", "content": "assistant reasoning"},
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "content": "huge tool output ignored"},
+                            {"type": "text", "text": "Switch storage from Redis to SQLite."},
+                        ],
+                    },
+                },
+                {"type": "user", "isMeta": True, "message": {"content": "meta ignored"}},
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "Keep API v1 compatible."},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "<environment_context>skip</environment_context>"}],
+                    },
+                },
+                {"role": "user", "content": "Run full tests before pushing."},
+                "not valid json line",
+            ]
+        )
+        code, output = self._run("recall", "--transcript", str(path))
+        self.assertEqual(0, code, output)
+        self.assertIn("total-user-turns: 4", output)
+        self.assertIn("[1] Always reply in Chinese and do not auto-commit.", output)
+        self.assertIn("[2] Switch storage from Redis to SQLite.", output)
+        self.assertIn("[3] Keep API v1 compatible.", output)
+        self.assertIn("[4] Run full tests before pushing.", output)
+        self.assertIn("skipped-malformed-lines: 1", output)
+        self.assertNotIn("huge tool output", output)
+        self.assertNotIn("injected hook", output)
+        self.assertNotIn("meta ignored", output)
+        self.assertNotIn("environment_context", output)
+
+    def test_recall_redacts_secrets_and_applies_budget_keeping_ends(self):
+        turns = [
+            {"type": "USER_INPUT", "content": f"Turn {i}: OPENAI_API_KEY=secret1234567890 detail"}
+            for i in range(1, 21)
+        ]
+        path = self._write_jsonl(turns)
+        code, output = self._run(
+            "recall",
+            "--transcript",
+            str(path),
+            "--max-turns",
+            "6",
+            "--max-chars",
+            "400",
+        )
+        self.assertEqual(0, code, output)
+        self.assertNotIn("secret1234567890", output)
+        self.assertIn("[redacted]", output)
+        self.assertIn("[1] Turn 1:", output)
+        self.assertIn("[20] Turn 20:", output)
+        self.assertIn("middle user turn(s) omitted", output)
+
+
 @unittest.skipUnless(shutil.which("git"), "git is not installed")
 class GitTests(HelperTestCase):
     def setUp(self):
@@ -391,16 +642,28 @@ class GitTests(HelperTestCase):
         (self.root / "a.txt").write_text("x", encoding="utf-8")
         git(self.root, "add", "a.txt")
         git(self.root, "commit", "-qm", "init")
-        self.base = manage_handoff._git_metadata(self.root)[0]
+        self.base, _, self.branch, _ = manage_handoff._git_info(self.root)
 
-    def test_prepare_reads_git_revision_and_state(self):
+    def test_prepare_reads_git_revision_branch_and_state(self):
         block = manage_handoff.prepare(self.root, "git session")
         self.assertRegex(block, r"source-revision: [0-9a-f]{40}")
         self.assertIn("working-tree-state: clean", block)
+        self.assertIn(f"branch: {self.branch}", block)
 
         (self.root / "a.txt").write_text("changed", encoding="utf-8")
         block = manage_handoff.prepare(self.root, "git session")
         self.assertIn("working-tree-state: dirty", block)
+
+    def test_unborn_repo_works_with_inspect_and_prepare(self):
+        with tempfile.TemporaryDirectory(prefix="project-handoff-unborn-") as tmp:
+            unborn = Path(tmp).resolve()
+            git(unborn, "init", "-q")
+            code, output = self._run("inspect", "--root", str(unborn))
+            self.assertEqual(0, code, output)
+            self.assertIn("current-revision: unborn", output)
+            block = manage_handoff.prepare(unborn, "unborn repo")
+            self.assertIn("source-revision: unborn", block)
+            self.assertIn("branch:", block)
 
     def test_handoff_files_do_not_make_tree_dirty(self):
         self.target.write_text(sample_document(), encoding="utf-8")
@@ -408,7 +671,10 @@ class GitTests(HelperTestCase):
         self.assertEqual("clean", manage_handoff._git_metadata(self.root)[1])
 
     def test_inspect_reports_commits_and_changes_since_baseline(self):
-        self.target.write_text(sample_document(revision=self.base, state="clean"), encoding="utf-8")
+        self.target.write_text(
+            sample_document(revision=self.base, state="clean", branch=self.branch),
+            encoding="utf-8",
+        )
         (self.root / "b.txt").write_text("y", encoding="utf-8")
         git(self.root, "add", "b.txt")
         git(self.root, "commit", "-qm", "add b during session")
@@ -421,6 +687,52 @@ class GitTests(HelperTestCase):
         self.assertIn("b.txt", output)
         self.assertIn("?? 新文件.txt", output)
         self.assertNotIn(f"?? {validator.TARGET_NAME}", output)
+
+    def test_inspect_warns_on_branch_change(self):
+        self.target.write_text(
+            sample_document(revision=self.base, state="clean", branch=self.branch),
+            encoding="utf-8",
+        )
+        git(self.root, "checkout", "-qb", "feature/handoff-test")
+        _, output = self._run("inspect", "--root", str(self.root))
+        self.assertIn(
+            f"WARNING: branch changed since previous handoff ({self.branch} -> feature/handoff-test)",
+            output,
+        )
+
+    def test_monorepo_subdirectory_is_scoped(self):
+        sub = self.root / "subproj"
+        sibling = self.root / "otherproj"
+        sub.mkdir()
+        sibling.mkdir()
+        (sub / "app.py").write_text("v1\n", encoding="utf-8")
+        (sibling / "other.py").write_text("v1\n", encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "-qm", "add subprojects")
+        sub_base = manage_handoff._git_metadata(sub)[0]
+
+        sub_candidate = sub / (validator.TARGET_NAME + ".candidate")
+        sub_candidate.write_text(sample_body_only(), encoding="utf-8")
+        code, save_out = self._run(
+            "save", "--root", str(sub), "--session-scope", "subproj baseline"
+        )
+        self.assertEqual(0, code, save_out)
+        saved_sub = (sub / validator.TARGET_NAME).read_text(encoding="utf-8")
+        self.assertIn("scope-path: subproj", saved_sub)
+        self.assertIn(f"source-revision: {sub_base}", saved_sub)
+
+        # Mutate sibling project (committed + uncommitted) — subproj must stay clean!
+        (sibling / "other.py").write_text("v2\n", encoding="utf-8")
+        git(self.root, "add", "otherproj/other.py")
+        git(self.root, "commit", "-qm", "sibling commit")
+        (sibling / "dirty.txt").write_text("ignored\n", encoding="utf-8")
+
+        _, inspect_out = self._run("inspect", "--root", str(sub))
+        self.assertIn("current-working-tree-state: clean", inspect_out)
+        self.assertIn("current-scope-path: subproj", inspect_out)
+        self.assertIn("commits-since-baseline: 0", inspect_out)
+        self.assertIn("repo-commits-since-baseline: 1 (0 touching subproj)", inspect_out)
+        self.assertNotIn("otherproj/dirty.txt", inspect_out)
 
     def test_inspect_flags_unknown_baseline(self):
         self.target.write_text(sample_document(revision="f" * 40, state="clean"), encoding="utf-8")

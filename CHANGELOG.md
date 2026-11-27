@@ -1,9 +1,27 @@
 # Changelog
 
+## 3.2.0 — 2026-11-27
+
+This release optimizes the skill for rapid, low-noise handoffs after heavily compacted sessions without polluting the fresh session's context.
+
+- **One-step save with fresh metadata (`save --session-scope`):** `manage_handoff.py save --session-scope "..."` generates and injects a fresh format-5 metadata block at save time (replacing an existing block or prepending to a body-only candidate), removing the extra `prepare` round-trip and avoiding stale `HEAD`/timestamp drift. `prepare` remains supported.
+- **Opt-in user-turn recall (`recall --transcript`):** new read-only subcommand extracts only secret-redacted human user messages from local Antigravity (`USER_INPUT`), Claude Code (`type: user`), Codex (`user_message`/`response_item`), or generic chat JSONL transcripts. Keeps earliest founding constraints and latest pivots within a strict budget while dropping all tool logs and system wrappers.
+- **Branch tracking and monorepo scoping:** Git metadata now emits optional `branch` (and `scope-path` when `--root` is a subdirectory of a Git repository). `inspect` scopes `git status`, `git diff --stat`, and `git log` to `.` (relative to `--root`) instead of the entire repository root `:/`, reports `repo-commits-since-baseline` when sibling commits exist, and warns on branch or scope switches. Also fixes a validator bug that rejected `source-revision: unborn` (6 chars) in freshly initialized Git repositories. Format remains **5** (backward-compatible with format-5 handoffs lacking `branch`/`scope-path`).
+- **Fix false-positive label rejection in code:** `_validate_labels` now strips inline code spans and fenced code blocks before scanning for unsupported bracketed CJK labels or prose `[已验证]` tokens, so quoted logs like `` `[警告] timeout` `` and commit prefixes like `` `[重构]` `` no longer fail save.
+- **Tighter fresh-session anti-pollution checks:**
+  - CJK-calibrated size budget: target 2,000–4,500 chars; warn above 6,000 (was 8,000); reject above 12,000 (was 16,000).
+  - Warn when `先读` is missing or lists more than 5 files.
+  - Warn when `做了什么` makes `[已验证]` claims while `验证情况` records none.
+  - Warn when `（承接上次）` carry-overs bloat (≥10 items or >60% of bullets when ≥8 bullets), encouraging graduation of permanent repo rules to `AGENTS.md`/`PITFALLS.md`.
+  - Warn when ephemeral session-bound process states (“后台运行中”, “仍在运行”, `PID: ...`) appear without `[待确认]`.
+- **SKILL.md & references:** upstreamed the `同步` shorthand mode, explicit anti-abbreviation rule (`[已实现][未验证]`, never `[未验证]`), carry-over graduation/pruning guidance, and the "session-bound state is not progress" rule.
+
+Validation before publication: 63 regression tests (`tools/test_regressions.py`), the isolated installation smoke test (`tools/smoke_install.py`), multi-agent installer tests (`tools/test_installer.py`), release checks (`tools/check_release.py`), `py_compile`, and 17 validator self-test scenarios run locally on Windows.
+
 ## 3.1.1 — 2026-11-09
 
 - **Fix:** the status-label check only matched a fixed list of old labels, so a real handoff using `[已提交]`, `[已决定]`, or `[注意]` passed validation. Any bracketed CJK label other than `[已验证]`, `[已实现][未验证]`, and `[待确认]` is now rejected; Markdown links such as `[文档](x.md)`, checkboxes, and ASCII brackets are unaffected. Handoff format stays **5**.
-- **SKILL.md rules:** each fact is written once in the section that owns it (commit hashes and "not committed" notes belong in `做了什么`); `未决问题` holds only unresolved items — decided ones go to `关键决策与理由`; stale carry-over is dropped silently instead of annotated; inherited items must be marked `（承接上次）`; `session-scope` describes the work, not the handoff.
+- **SKILL.md rules:** each fact is written once in the section that owns it (commit hashes and "not committed" notes belong in `做了什么`); `未决问题` holds only unresolved items — decided ones go to `关键决策与理由`; stale carry-over is dropped silently instead of annotated; inherited items must carry `（承接上次）`; `session-scope` describes the work, not the handoff.
 - **`第一个动作`:** when progress is blocked on a user decision, the first action is the specific question to ask, with its options; re-checking the repo is Resume's job, not a first action.
 
 Validation before publication: 46 regression tests, the isolated installation smoke test, installer tests, release checks, and 14 validator self-test scenarios, run locally on Windows.
@@ -22,7 +40,7 @@ This release targets the case the skill exists for: a session that has been comp
 - **Fix:** secret detection missed prefixed environment variables such as `OPENAI_API_KEY=...` and `GITHUB_TOKEN=...`; it now also detects `sk-`, `ghp_`, `github_pat_`, `xox?-`, and `AIza` tokens, and accepts references such as `$VAR`, `%VAR%`, and `<redacted>`.
 - **Fix:** template placeholders that begin with a keyword (for example `<the single first action>`) or are not in the keyword list went undetected; a whole-line placeholder rule now backs up the keyword list, and a test checks every placeholder in the `SKILL.md` template.
 - **Fix:** the first save failed on file systems without hard links; it now falls back to exclusive creation.
-- Scripts switch their output to UTF-8 themselves; `-X utf8` is no longer required.
+- **Fix:** scripts switch their output to UTF-8 themselves; `-X utf8` is no longer required.
 - Size budget: target 3,000–6,000 characters; warn above 8,000, reject above 16,000.
 - The description now names trigger phrases (`写交接`, `开新会话`, `上下文快满了`, `handoff`, …) and the resume case.
 - Format-4 handoffs are still read by `inspect` and carried over by the next write.

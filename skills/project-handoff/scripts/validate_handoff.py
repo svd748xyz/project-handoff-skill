@@ -21,6 +21,11 @@ REQUIRED_METADATA = (
     "source-revision",
     "working-tree-state",
 )
+OPTIONAL_METADATA = (
+    "branch",
+    "scope-path",
+)
+ALLOWED_METADATA = set(REQUIRED_METADATA) | set(OPTIONAL_METADATA)
 ALLOWED_TREE_STATES = {"clean", "dirty", "not-a-git-repository"}
 NO_GIT = "not-a-git-repository"
 SECTIONS = (
@@ -43,6 +48,7 @@ META_BLOCK_RE = re.compile(
 )
 SECTION_RE = re.compile(r"<!--\s*section:\s*([a-z0-9-]+)\s*-->")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 STATUS_TOKEN_RE = re.compile(r"\[[\u4e00-\u9fff]{2,10}\](?!\()")
 ALLOWED_STATUS_TOKENS = {"[已验证]", "[待确认]"}
 VERIFIED_TOKEN = "[已验证]"
@@ -57,7 +63,7 @@ SECRET_ASSIGNMENT_RE = re.compile(
     r"password|passwd|cookie|client[_-]?secret|secret|private[_-]?key)\b"
     r"\s*[:=：]\s*([^\s`]+)"
 )
-BEARER_RE = re.compile(r"(?im)\bauthorization\s*:\s*bearer\s+([^\s`]+)")
+BEARER_RE = re.compile(r"(?im)(\bauthorization\s*:\s*bearer\s+)([^\s`]+)")
 AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 TOKEN_RE = re.compile(
     r"\b(?:sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}"
@@ -85,6 +91,14 @@ RAW_CONTEXT_RE = re.compile(
     r"(?im)(?:完整对话记录|原始聊天记录|完整聊天记录|思维链|chain[ -]of[ -]thought|"
     r"^\s*(?:user|assistant|tool)\s*[:：])"
 )
+EPHEMERAL_STATE_RE = re.compile(
+    r"(?:后台运行中|仍在运行|正在运行中|进程仍存活|进程存活|"
+    r"running in (?:the )?background|\bpid\s*[:=：]\s*\d+)",
+    re.IGNORECASE,
+)
+INHERITED_RE = re.compile(r"[（(]承接上次[）)]")
+PREREAD_LINE_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])?\s*先读\s*[:：](.*)$")
+PATH_LIKE_RE = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+|\.[A-Za-z0-9]{1,8})\b")
 PLACEHOLDER_RE = re.compile(
     r"<[^>\n]{0,160}(?:the goal|the overall goal|the single|changes made|"
     r"files or areas|decisions? that|what was run|unresolved|failed attempts|"
@@ -95,8 +109,12 @@ PLACEHOLDER_RE = re.compile(
 PLACEHOLDER_LINE_RE = re.compile(
     r"(?m)^\s*(?:[-*+]\s+)?(<(?![!/])[^<>\n]*\s[^<>\n]*\s[^<>\n]*>)\s*$"
 )
-LENGTH_WARNING = 8_000
-LENGTH_LIMIT = 16_000
+LENGTH_WARNING = 6_000
+LENGTH_LIMIT = 12_000
+MAX_PREREAD_FILES = 5
+INHERITED_BULLET_WARNING_COUNT = 10
+INHERITED_BULLET_WARNING_RATIO = 0.6
+INHERITED_BULLET_MIN_TOTAL = 8
 
 
 @dataclass
@@ -114,6 +132,61 @@ class Report:
         if strict and self.warnings:
             return 1
         return 0
+
+
+def _strip_code_preserving_lines(text: str) -> str:
+    """Replace fenced code blocks and inline code spans while keeping line alignment."""
+    out: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+            in_fence = True
+            fence_marker = stripped[:3]
+            out.append("")
+            continue
+        if in_fence:
+            if stripped.startswith(fence_marker):
+                in_fence = False
+                fence_marker = ""
+            out.append("")
+            continue
+        out.append(INLINE_CODE_RE.sub("", line))
+    return "\n".join(out)
+
+
+def _looks_like_secret(raw: str) -> bool:
+    value = raw.strip("'\".,;，。；")
+    if value.casefold() in SAFE_SECRET_VALUES or value.startswith(
+        SECRET_REFERENCE_PREFIXES
+    ):
+        return False
+    return len(value) >= 6 and bool(re.search(r"[A-Za-z0-9]", value))
+
+
+def redact_secrets(text: str) -> str:
+    """Redact common credential shapes without modifying non-secret text."""
+    text = PRIVATE_KEY_RE.sub("[redacted-private-key]", text)
+    text = AWS_KEY_RE.sub("[redacted]", text)
+    text = TOKEN_RE.sub("[redacted]", text)
+
+    def _replace_bearer(match: re.Match[str]) -> str:
+        if _looks_like_secret(match.group(2)):
+            return f"{match.group(1)}[redacted]"
+        return match.group(0)
+
+    def _replace_assignment(match: re.Match[str]) -> str:
+        if _looks_like_secret(match.group(2)):
+            full = match.group(0)
+            value = match.group(2)
+            idx = full.rfind(value)
+            return full[:idx] + "[redacted]"
+        return match.group(0)
+
+    text = BEARER_RE.sub(_replace_bearer, text)
+    text = SECRET_ASSIGNMENT_RE.sub(_replace_assignment, text)
+    return text
 
 
 def _parse_metadata(text: str, report: Report) -> dict[str, str]:
@@ -143,11 +216,11 @@ def _parse_metadata(text: str, report: Report) -> dict[str, str]:
     missing = [key for key in REQUIRED_METADATA if key not in metadata]
     if missing:
         report.errors.append("missing metadata keys: " + ", ".join(missing))
-    for key in REQUIRED_METADATA:
+    for key in REQUIRED_METADATA + OPTIONAL_METADATA:
         if key in metadata and not metadata[key]:
             report.errors.append(f"metadata value is empty: {key}")
 
-    unknown = sorted(set(metadata) - set(REQUIRED_METADATA))
+    unknown = sorted(set(metadata) - ALLOWED_METADATA)
     if unknown:
         report.warnings.append("unknown metadata keys: " + ", ".join(unknown))
     return metadata
@@ -193,13 +266,56 @@ def _validate_metadata(metadata: dict[str, str], report: Report) -> None:
         )
     if state in {"clean", "dirty"} and revision == NO_GIT:
         report.errors.append("a git handoff must record the actual source revision")
-    if revision and revision != NO_GIT and len(revision) < 7:
+    if revision and revision not in {NO_GIT, "unborn"} and len(revision) < 7:
         report.errors.append(
             "source-revision looks too short; record the full commit or a unique prefix"
         )
 
+    branch = metadata.get("branch", "")
+    if branch:
+        if state == NO_GIT and branch != NO_GIT:
+            report.errors.append(
+                "a non-git handoff must not record a git branch"
+            )
+        if state in {"clean", "dirty"} and branch == NO_GIT:
+            report.errors.append("a git handoff must record the actual branch or 'detached'")
 
-def _validate_sections(text: str, report: Report) -> None:
+    scope_path = metadata.get("scope-path", "")
+    if scope_path and state == NO_GIT:
+        report.errors.append("scope-path is only valid for git handoffs")
+
+
+def _count_preread_items(next_body: str) -> int | None:
+    lines = next_body.splitlines()
+    collected: list[str] = []
+    collecting = False
+    for line in lines:
+        match = PREREAD_LINE_RE.match(line)
+        if match:
+            collecting = True
+            collected.append(match.group(1).strip())
+            continue
+        if collecting:
+            if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+\S", line) and not re.match(
+                r"^\s{2,}(?:[-*+]|\d+[.)])\s+", line
+            ):
+                break
+            if not line.strip():
+                break
+            collected.append(line.strip())
+    if not collected:
+        return None
+    joined = " ".join(collected).strip()
+    if joined in {"无", "无。", "none", "None", "-"}:
+        return 0
+    backticked = [item.strip() for item in re.findall(r"`([^`\n]+)`", joined) if item.strip()]
+    if backticked:
+        return len(backticked)
+    return len(PATH_LIKE_RE.findall(joined))
+
+
+def _validate_sections(text: str, report: Report) -> dict[str, str]:
+    section_bodies: dict[str, str] = {}
     if len(re.findall(r"(?m)^# 项目开发交接\s*$", text)) != 1:
         report.errors.append(
             "document must contain exactly one '# 项目开发交接' heading"
@@ -235,6 +351,7 @@ def _validate_sections(text: str, report: Report) -> None:
         end = markers[index + 1].start() if index + 1 < len(markers) else len(text)
         body = HTML_COMMENT_RE.sub("", text[marker.end():end])
         body = re.sub(r"(?m)^##\s+.*$", "", body, count=1).strip()
+        section_bodies[section] = body
         if not body:
             report.errors.append(f"section {section!r} is empty")
         elif section == "next":
@@ -243,17 +360,42 @@ def _validate_sections(text: str, report: Report) -> None:
                     report.errors.append(
                         f"section 'next' must name the {phrase!r} item"
                     )
+            preread_count = _count_preread_items(body)
+            if preread_count is None:
+                report.warnings.append(
+                    "section 'next' should include a '先读' item (or '- 先读：无')"
+                )
+            elif preread_count > MAX_PREREAD_FILES:
+                report.warnings.append(
+                    f"'先读' lists {preread_count} files; keep it to {MAX_PREREAD_FILES} "
+                    "or fewer minimal files (with line ranges for large files) to protect "
+                    "the fresh session"
+                )
+
+    work_plain = _strip_code_preserving_lines(section_bodies.get("work", ""))
+    verification_plain = _strip_code_preserving_lines(
+        section_bodies.get("verification", "")
+    )
+    if VERIFIED_TOKEN in work_plain and VERIFIED_TOKEN not in verification_plain:
+        report.warnings.append(
+            "section 'work' contains [已验证] claims, but 'verification' records no "
+            "[已验证] check"
+        )
+
+    return section_bodies
 
 
 def _validate_labels(text: str, report: Report) -> None:
-    for line in text.splitlines():
-        if VERIFIED_TOKEN in line and not EVIDENCE_HINT_RE.search(line):
+    visible = HTML_COMMENT_RE.sub("", text)
+    plain = _strip_code_preserving_lines(visible)
+    for raw_line, plain_line in zip(visible.splitlines(), plain.splitlines()):
+        if VERIFIED_TOKEN in plain_line and not EVIDENCE_HINT_RE.search(raw_line):
             report.errors.append(
                 "[已验证] item needs a command, result, file or date: "
-                + line.strip()[:80]
+                + raw_line.strip()[:80]
             )
 
-    remaining = text.replace("[已实现][未验证]", "")
+    remaining = plain.replace("[已实现][未验证]", "")
     seen: set[str] = set()
     for token in STATUS_TOKEN_RE.findall(remaining):
         if token not in ALLOWED_STATUS_TOKENS and token not in seen:
@@ -264,17 +406,9 @@ def _validate_labels(text: str, report: Report) -> None:
             )
 
 
-def _looks_like_secret(raw: str) -> bool:
-    value = raw.strip("'\".,;，。；")
-    if value.casefold() in SAFE_SECRET_VALUES or value.startswith(
-        SECRET_REFERENCE_PREFIXES
-    ):
-        return False
-    return len(value) >= 6 and bool(re.search(r"[A-Za-z0-9]", value))
-
-
 def _validate_content(text: str, report: Report) -> None:
     visible = HTML_COMMENT_RE.sub("", text)
+    plain = _strip_code_preserving_lines(visible)
 
     if AWS_KEY_RE.search(text):
         report.errors.append("possible AWS access key found")
@@ -290,17 +424,25 @@ def _validate_content(text: str, report: Report) -> None:
             )
 
     for match in BEARER_RE.finditer(text):
-        if _looks_like_secret(match.group(1)):
+        if _looks_like_secret(match.group(2)):
             report.errors.append("possible bearer token found")
 
     if EMAIL_RE.search(visible):
         report.warnings.append("possible email address found; retain only if essential")
     if CN_MOBILE_RE.search(visible):
         report.warnings.append("possible mobile number found; retain only if essential")
-    if RAW_CONTEXT_RE.search(visible):
+    if RAW_CONTEXT_RE.search(plain):
         report.warnings.append(
             "handoff appears to contain raw conversation or chain-of-thought content"
         )
+
+    for plain_line in plain.splitlines():
+        if EPHEMERAL_STATE_RE.search(plain_line) and "[待确认]" not in plain_line:
+            report.warnings.append(
+                "ephemeral session-bound state found without [待确认]; record a "
+                "landed-artifact check (mtime/log) instead of live process state"
+            )
+            break
 
     placeholders = sorted(
         set(PLACEHOLDER_RE.findall(visible)) | set(PLACEHOLDER_LINE_RE.findall(visible))
@@ -310,17 +452,28 @@ def _validate_content(text: str, report: Report) -> None:
             "unresolved template placeholders: " + ", ".join(placeholders)
         )
 
-    bullets = [
-        re.sub(r"\s+", " ", line.strip()).casefold()
+    raw_bullets = [
+        line.strip()
         for line in visible.splitlines()
         if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", line)
     ]
+    bullets = [re.sub(r"\s+", " ", line).casefold() for line in raw_bullets]
     duplicates = sorted(
         bullet for bullet, count in Counter(bullets).items() if count > 1
     )
     if duplicates:
         report.warnings.append(
             f"duplicate bullet content found ({len(duplicates)} item(s))"
+        )
+
+    inherited_count = sum(1 for line in raw_bullets if INHERITED_RE.search(line))
+    if inherited_count >= INHERITED_BULLET_WARNING_COUNT or (
+        len(raw_bullets) >= INHERITED_BULLET_MIN_TOTAL
+        and inherited_count / len(raw_bullets) > INHERITED_BULLET_WARNING_RATIO
+    ):
+        report.warnings.append(
+            f"many carried-over items ({inherited_count}/{len(raw_bullets)} bullets); "
+            "prune resolved items or promote permanent rules to AGENTS.md/PITFALLS.md"
         )
 
     length = len(visible)
@@ -399,7 +552,7 @@ def _swap_sections(text: str, first: str, second: str) -> str:
 def _sample_document() -> str:
     return """<!-- project-handoff-meta
 format-version: 5
-updated-at: 2026-11-09T10:00:00+08:00
+updated-at: 2026-11-27T10:00:00+08:00
 session-scope: Recenter the handoff skill on single-session distillation.
 source-revision: not-a-git-repository
 working-tree-state: not-a-git-repository
@@ -426,7 +579,7 @@ working-tree-state: not-a-git-repository
 
 <!-- section: verification -->
 ## 验证情况
-- [已验证] `python -m pytest tools -q` 在 2026-11-09 通过，18 passed。
+- [已验证] `python -m pytest tools -q` 在 2026-11-27 通过，18 passed。
 - [已实现][未验证] 新的安装器尚未在 Claude Code 中实测。
 
 <!-- section: pitfalls -->
@@ -471,10 +624,17 @@ def run_self_test() -> int:
             not validate_text(valid.replace("[待确认]", "[已决定]")).ok,
         ),
         (
+            "code span brackets accepted",
+            validate_text(
+                valid.replace("重写 `SKILL.md`", "修复日志 `[警告] timeout` 并重写 `SKILL.md`")
+            ).exit_code(strict=True)
+            == 0,
+        ),
+        (
             "verified without evidence rejected",
             not validate_text(
                 valid.replace(
-                    "`python -m pytest tools -q` 在 2026-11-09 通过，18 passed。",
+                    "`python -m pytest tools -q` 在 2026-11-27 通过，18 passed。",
                     "测试通过。",
                 )
             ).ok,
@@ -503,6 +663,28 @@ def run_self_test() -> int:
         (
             "next without first action rejected",
             not validate_text(valid.replace("第一个动作：", "")).ok,
+        ),
+        (
+            "too many preread files warns",
+            bool(
+                validate_text(
+                    valid.replace(
+                        "`SKILL.md`（模板与规则的唯一来源）",
+                        "`a.py`、`b.py`、`c.py`、`d.py`、`e.py`、`f.py`",
+                    )
+                ).warnings
+            ),
+        ),
+        (
+            "ephemeral running state warns",
+            bool(
+                validate_text(
+                    valid.replace(
+                        "重写 `SKILL.md` 为八节会话模板。",
+                        "训练脚本仍在运行，PID: 12345。",
+                    )
+                ).warnings
+            ),
         ),
         (
             "oversized rejected",
